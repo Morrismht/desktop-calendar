@@ -47,6 +47,7 @@ namespace DesktopCalendar.UI
         private const int TITLE_X = 64;          // 月份标题左边（标记右侧）
         private const int TIP_BTN_W = 56;
         private const int TIP_BTN_H = 20;
+        private const int TIP_EDIT_W = 44;
 
         // ---------------------------------------------------------------- 命中 id
         private const int HIT_PREV = 0;
@@ -59,48 +60,22 @@ namespace DesktopCalendar.UI
         private const int HIT_MIN = 7;
         private const int HIT_CLOSE = 8;
         private const int HIT_TIP_NEXT = 9;
-        private const int HIT_ROW_BASE = 10;
+        private const int HIT_TIP_EDIT = 10;
+        private const int HIT_ROW_BASE = 11;   // 10 让给 HIT_TIP_EDIT，行命中从 11 起
         private const int HIT_CIRCLE_BASE = 100;
 
         private const string TIP_NEXT_LABEL = "换一条";
+        private const string TIP_EDIT_LABEL = "编辑";
 
         private static readonly string[] WeekNames = new string[]
         {
             "周日", "周一", "周二", "周三", "周四", "周五", "周六"
         };
 
-        /// <summary>内置提示池（≥24 条）：正向、具体、不说教。</summary>
-        private static readonly string[] TipPool = new string[]
-        {
-            "把一个待办拆成十分钟内能动手的第一步。",
-            "日程之间留十五分钟空档，临时状况就不会连锁。",
-            "先做最不想做的那件，剩下的都轻一些。",
-            "把会议压成二十五分钟，留五分钟给自己收尾。",
-            "今天只定三个重点，做完就算赢。",
-            "提前十分钟到，比准点到更从容。",
-            "写日程时顺手加上地点，出门前不用再翻记录。",
-            "把「稍后再说」换成具体时间，事情才会真的发生。",
-            "顺手能做完的事，别让它进入待办清单。",
-            "留一段不排事的时间，用来处理意外和喘息。",
-            "上午最清醒的两个小时，留给需要专注的事。",
-            "重复的日程先设好，以后就不必再想它。",
-            "完成一件就勾掉一件，进度看得见才有动力。",
-            "把手机放远一点，专注的时间会更安静。",
-            "出门前看一眼明天的安排，早晨会顺很多。",
-            "给难任务配个好环境：干净的桌面和一杯水。",
-            "日程别排满，七分满最好用。",
-            "用颜色区分工作与个人，一眼看清一天的形状。",
-            "十分钟的散步，常常比再刷一轮消息更提神。",
-            "把大目标写成本周的一件事，胜过写十条愿望。",
-            "会前先写一句话结论，讨论会快一半。",
-            "今天的第一次专注，从关掉一个通知开始。",
-            "傍晚回顾五分钟，明天的安排会清楚很多。",
-            "困的时候先喝口水，再决定要不要硬撑。",
-            "把明天要带的东西今晚放在门口。",
-            "一次只做一件事，速度反而更快。"
-        };
+        // 内置 26 条提示已搬到 TipStore.BuiltinDefaults，MainForm 只引用，不再维护第二份。
 
         private readonly Store _store;
+        private readonly TipStore _tipStore;
         private readonly Scheduler _scheduler;
         private readonly MonthView _monthView;
         private readonly Panel _dragBar;
@@ -127,6 +102,7 @@ namespace DesktopCalendar.UI
         private Rectangle _rList;
         private Rectangle _rTip;
         private Rectangle _rTipNext;
+        private Rectangle _rTipEdit;
         private Rectangle _rMin;
         private Rectangle _rClose;
 
@@ -139,6 +115,8 @@ namespace DesktopCalendar.UI
             _store = store;
             _scheduler = scheduler;
             _selected = DateTime.Today;
+            // 与 _store 同目录：自定义提示不进 data.json，单独一个 tips.json
+            _tipStore = new TipStore(store != null ? store.DataDir : null);
 
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -255,6 +233,7 @@ namespace DesktopCalendar.UI
             _rNew = new Rectangle(side.X, side.Bottom - NEW_H, side.Width, NEW_H);
             _rTip = new Rectangle(side.X, _rNew.Y - 12 - TIP_H, side.Width, TIP_H);
             _rTipNext = new Rectangle(_rTip.Right - TIP_PAD - TIP_BTN_W, _rTip.Y + 9, TIP_BTN_W, TIP_BTN_H);
+            _rTipEdit = new Rectangle(_rTipNext.X - 6 - TIP_EDIT_W, _rTipNext.Y, TIP_EDIT_W, _rTipNext.Height);
 
             int listTop = side.Y + DATE_HEAD_H + LIST_GAP;
             int listH = _rTip.Y - LIST_GAP - listTop;
@@ -318,10 +297,11 @@ namespace DesktopCalendar.UI
         // ---------------------------------------------------------------- 每日提示文案
 
         /// <summary>
-        /// 当前「每日提示」文案。优先级：① 有逾期 → 先清逾期；② 今天未完成 → 还剩几项；
-        /// ③ 今天全完成 → 都完成了；④ 否则按 DayOfYear % 池长度取内置文案。
-        /// 点过「换一条」后（_tipIndex ≥ 1）改为按池顺序往后翻，保证一次点击一定换文案。
-        /// 空数据（0 条日程）落到 ④，给的是池里的一句正向文案，不会空白。
+        /// 当前「每日提示」文案。活动池 = 用户池非空则用户池，否则 TipStore.BuiltinDefaults。
+        /// _tipIndex ≤ 0（用户还没点过「换一条」）时先给状态提醒，与是否自定义过无关：
+        /// ① 有逾期 → 先清逾期；② 今天未完成 → 还剩几项；③ 今天全完成 → 都完成了；
+        /// 以上都不成立（今天没有日程）才走活动池。_tipIndex > 0 直接走活动池，
+        /// 「换一条」只在同一条活动池内往后翻，保证一次点击一定换文案。
         /// </summary>
         internal string TipText(DateTime now)
         {
@@ -360,17 +340,48 @@ namespace DesktopCalendar.UI
                 if (total > 0 && done < total) return string.Format("今天还剩 {0} 项", total - done);
                 if (total > 0) return string.Format("今天的 {0} 项都完成了", total);
             }
-            return TipPool[TipPoolIndex(now)];
+            IList<string> pool = ActiveTips();
+            if (pool == null || pool.Count == 0) return "";
+            return pool[TipIndex(pool.Count, now)];
         }
 
-        private int TipPoolIndex(DateTime now)
+        /// <summary>当前活动池：用户有自己的就给用户池，否则回落内置 26 条。</summary>
+        private IList<string> ActiveTips()
         {
-            int i = (now.DayOfYear + _tipIndex) % TipPool.Length;
-            if (i < 0) i += TipPool.Length;
+            if (HasUserTips()) return _tipStore.Tips;
+            return TipStore.BuiltinDefaults;
+        }
+
+        private bool HasUserTips()
+        {
+            return _tipStore != null && _tipStore.Tips != null && _tipStore.Tips.Count > 0;
+        }
+
+        private int TipIndex(int count, DateTime now)
+        {
+            if (count <= 0) return 0;
+            int i = (now.DayOfYear + _tipIndex) % count;
+            if (i < 0) i += count;
             return i;
         }
 
-        private void NextTip()
+        // 测试入口：只在同程序集内可见，UI 之外不给用。
+        internal Rectangle TipBounds { get { return _rTip; } }
+        internal Rectangle TipEditBounds { get { return _rTipEdit; } }
+        internal Rectangle TipNextBounds { get { return _rTipNext; } }
+        internal TipStore TipStoreRef { get { return _tipStore; } }
+
+        internal int TipIndexValue
+        {
+            get { return _tipIndex; }
+            set
+            {
+                _tipIndex = value;
+                Invalidate();
+            }
+        }
+
+        internal void NextTip()
         {
             _tipIndex++;
             if (_tipIndex > 100000) _tipIndex = 1;
@@ -429,6 +440,29 @@ namespace DesktopCalendar.UI
             catch (Exception ex)
             {
                 MessageBox.Show("打开编辑器失败：" + ex.Message, "桌面日历",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>打开提示编辑器；保存过才落盘并从头开始翻（_tipIndex 归零 = 回到当天第一句）。</summary>
+        private void OpenTipEditor()
+        {
+            try
+            {
+                using (TipEditor editor = new TipEditor(_tipStore))
+                {
+                    editor.ShowDialog(this);
+                    if (editor.Saved)
+                    {
+                        _tipStore.Save();
+                        _tipIndex = 0;
+                        Invalidate();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("打开提示编辑器失败：" + ex.Message, "桌面日历",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
@@ -757,11 +791,15 @@ namespace DesktopCalendar.UI
             Draw.Block(g, r, TIP_RADIUS, t.TipBg);
             Draw.StrokeRound(g, r, TIP_RADIUS, t.TipLine, 1f);
 
-            int titleW = r.Width - TIP_PAD * 2 - TIP_BTN_W - 8;
+            int titleW = r.Width - TIP_PAD * 2 - TIP_BTN_W - TIP_EDIT_W - 14;
             if (titleW < 20) titleW = 20;
             Draw.Text(g, "每日提示", t.SmallBold, t.Accent,
                 new Rectangle(r.X + TIP_PAD, r.Y + 9, titleW, 18),
                 StringAlignment.Near, StringAlignment.Center);
+
+            bool hotEdit = _hover == HIT_TIP_EDIT;
+            Draw.Text(g, TIP_EDIT_LABEL, t.Small, hotEdit ? t.Accent : t.TextMuted, _rTipEdit,
+                StringAlignment.Far, StringAlignment.Center);
 
             bool hot = _hover == HIT_TIP_NEXT;
             Draw.Text(g, TIP_NEXT_LABEL, t.Small, hot ? t.Accent : t.TextMuted, _rTipNext,
@@ -924,6 +962,7 @@ namespace DesktopCalendar.UI
             if (_rNext.Contains(p)) return HIT_NEXT;
             if (_rToday.Contains(p)) return HIT_TODAY;
             if (_rNew.Contains(p)) return HIT_NEW;
+            if (_rTipEdit.Contains(p)) return HIT_TIP_EDIT;
             if (_rTipNext.Contains(p)) return HIT_TIP_NEXT;
             if (_rAutoStart.Contains(p)) return HIT_AUTOSTART;
             if (_rTheme.Contains(p)) return HIT_THEME;
@@ -982,6 +1021,7 @@ namespace DesktopCalendar.UI
             if (hit == HIT_NEXT) { ShiftMonth(1); return; }
             if (hit == HIT_TODAY) { GoToday(); return; }
             if (hit == HIT_NEW) { CreateItem(); return; }
+            if (hit == HIT_TIP_EDIT) { OpenTipEditor(); return; }
             if (hit == HIT_TIP_NEXT) { NextTip(); return; }
             if (hit == HIT_AUTOSTART) { ToggleAutoStart(); return; }
             if (hit == HIT_THEME) { ToggleTheme(); return; }
