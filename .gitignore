@@ -1,0 +1,29 @@
+# 构建产物
+build/
+bin/
+obj/
+*.exe
+*.pdb
+*.dll
+
+# 测试自检产物
+tests/*.exe
+
+# 局部编译自检临时目录（绝不进最终构建）
+_scratch/
+
+# Visual Studio / 用户级设置
+.vs/
+*.user
+*.suo
+
+# 系统垃圾
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 运行期 / 调试日志
+*.log
+
+# 注意：preview/*.png 是 README 引用的截图，必须纳入版本库。
+# 不要在此处添加 *.png 或 preview/ 之类的忽略规则。
