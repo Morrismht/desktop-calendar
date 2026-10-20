@@ -20,6 +20,10 @@ namespace DesktopCalendar.UI
         public Color Bg, Surface, SurfaceAlt, TextPrimary, TextSecondary, TextMuted,
                      Border, Accent, AccentSoft, TodayBg, Danger, Success;
 
+        // CONTRACT-V2 §2 追加：卡片面 / 卡片描边 / 日期格色块 / 星期色带 / 提示卡 / 阴影基色。
+        // 名字冻结，明暗两套都在 ApplyColors() 里赋值；AccentSoft / TodayBg 语义不变。
+        public Color Card, CardLine, CellBg, CellBgFaint, HeaderBand, TipBg, TipLine, Shadow;
+
         public Color[] Palette { get; private set; }
 
         public Font Title, Body, BodyBold, Small, SmallBold, Big;
@@ -102,6 +106,16 @@ namespace DesktopCalendar.UI
                 TodayBg = ParseHex("#23304F", Color.Navy);
                 Danger = ParseHex("#F87171", Color.Red);
                 Success = ParseHex("#34D399", Color.Green);
+
+                // CONTRACT-V2 §2 深色一套：格子比卡片亮一档（凸起），非本月格比卡片暗一档（后退）
+                Card = ParseHex("#1A1D25", Color.Black);
+                CardLine = ParseHex("#262B35", Color.Gray);
+                CellBg = ParseHex("#20242D", Color.Black);
+                CellBgFaint = ParseHex("#171A21", Color.Black);
+                HeaderBand = ParseHex("#1E2537", Color.Navy);
+                TipBg = ParseHex("#202A42", Color.Navy);
+                TipLine = ParseHex("#2E3B57", Color.Navy);
+                Shadow = ParseHex("#000000", Color.Black);
             }
             else
             {
@@ -117,6 +131,16 @@ namespace DesktopCalendar.UI
                 TodayBg = ParseHex("#E8EEFF", Color.AliceBlue);
                 Danger = ParseHex("#EF4444", Color.Red);
                 Success = ParseHex("#22C55E", Color.Green);
+
+                // CONTRACT-V2 §2 浅色一套：卡片纯白，格子 #F5F7FC 色块，非本月再淡一档
+                Card = ParseHex("#FFFFFF", Color.White);
+                CardLine = ParseHex("#E6EBF5", Color.Gainsboro);
+                CellBg = ParseHex("#F5F7FC", Color.WhiteSmoke);
+                CellBgFaint = ParseHex("#FAFBFE", Color.WhiteSmoke);
+                HeaderBand = ParseHex("#EEF3FF", Color.AliceBlue);
+                TipBg = ParseHex("#EEF4FF", Color.AliceBlue);
+                TipLine = ParseHex("#DCE7FF", Color.AliceBlue);
+                Shadow = ParseHex("#1B2233", Color.Black);
             }
         }
 

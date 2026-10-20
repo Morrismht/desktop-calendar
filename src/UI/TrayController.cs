@@ -10,7 +10,8 @@ using DesktopCalendar.Services;
 namespace DesktopCalendar.UI
 {
     /// <summary>
-    /// 托盘图标 + 右键菜单。图标完全由代码绘制（16×16），不依赖外部 .ico 文件。
+    /// 托盘图标 + 右键菜单。图标优先取 Branding.TrayBitmap（由 exe 自身 ico 派生），
+    /// 取不到时回落到代码绘制的 16×16 方块，确保任何时候都不是空图标。
     /// </summary>
     public class TrayController : IDisposable
     {
@@ -42,7 +43,7 @@ namespace DesktopCalendar.UI
         {
             _store = store;
 
-            _appIcon = BuildIcon();
+            _appIcon = BuildAppIcon();
 
             _menu = new ContextMenuStrip();
             _menu.Font = Theme.Current.Small != null ? Theme.Current.Small : SystemFonts.MenuFont;
@@ -238,6 +239,49 @@ namespace DesktopCalendar.UI
         }
 
         // ---------------------------------------------------------------- 图标
+
+        /// <summary>优先用 exe 自带图标派生的托盘位图；拿不到才回落到代码绘制。</summary>
+        private static Icon BuildAppIcon()
+        {
+            try
+            {
+                Bitmap brand = Branding.TrayBitmap;
+                if (brand != null)
+                {
+                    Icon fromBrand = IconFromBitmap(brand);
+                    if (fromBrand != null) return fromBrand;
+                }
+            }
+            catch (Exception) { }
+            return BuildIcon();
+        }
+
+        /// <summary>位图转 Icon：句柄用完即销毁，返回的 Icon 是独立副本。</summary>
+        private static Icon IconFromBitmap(Bitmap bmp)
+        {
+            if (bmp == null) return null;
+            IntPtr h = IntPtr.Zero;
+            try
+            {
+                h = bmp.GetHicon();
+                using (System.Drawing.Icon tmp = System.Drawing.Icon.FromHandle(h))
+                {
+                    return (System.Drawing.Icon)tmp.Clone();
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+            finally
+            {
+                if (h != IntPtr.Zero)
+                {
+                    try { DestroyIcon(h); }
+                    catch (Exception) { }
+                }
+            }
+        }
 
         private static Icon BuildIcon()
         {

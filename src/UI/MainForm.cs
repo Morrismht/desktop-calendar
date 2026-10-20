@@ -9,24 +9,95 @@ using DesktopCalendar.Services;
 
 namespace DesktopCalendar.UI
 {
-    /// <summary>主窗口：无边框 1000×700，左侧自绘月历，右侧当日侧栏，底部 44 高状态条。</summary>
+    /// <summary>
+    /// 主窗口：无边框 1000×700。头部「品牌标记 + 月份标题 + 今天/窗口按钮」；
+    /// 主体是两张独立的卡（左月历卡、右日程卡，各自 Draw.Card 出面 + 描边 + 阴影，
+    /// 中间留窗口底色间隙）；日程卡底部嵌一张「每日提示」小卡；最底部 44 高状态条。
+    /// </summary>
     public class MainForm : Form
     {
-        private const int PAD = 20;
-        private const int SIDEBAR_W = 320;
+        // ---------------------------------------------------------------- 栅格（CONTRACT-V2 §7）
+        // 硬约束：两卡左右各距窗口 20；两卡水平间距 ≥14；月历卡内 padding ≥12；状态条 44。
+        private const int PAD = 20;              // 卡片左右边距
+        private const int GAP = 16;              // 两卡之间的窗口底色间隙
+        private const int CARD_TOP = 68;         // 卡片顶边（头部 0..64）
+        private const int CARD_RADIUS = 12;
+        private const int CARD_PAD = 16;         // 卡内 padding
         private const int STATUS_H = 44;
-        private const int HEADER_TOP = 10;
-        private const int HEADER_H = 34;
-        private const int MONTH_TOP = 52;
+        private const int MIN_MONTH_W = 700;     // 月历卡优先宽度：窄窗口先压侧栏
+        private const int MIN_SIDE_W = 300;      // 侧栏下限，再窄就允许月历卡小于 MIN_MONTH_W
+        private const int MIN_MONTH_HARD = 260;  // 极端窄时的兜底，保证不出现负宽度/重叠
+        private const int BTN_TOP = 17;          // 头部按钮/胶囊的 y
+        private const int BTN_H = 30;
+        private const int SIDEBAR_W = 344;
         private const int ROW_H = 46;
         private const int ROW_STEP = 50;
         private const int ROW_RADIUS = 10;
         private const int PILL_RADIUS = 8;
-        private const int LIST_TOP = 90;
+        private const int TIP_H = 96;
+        private const int TIP_RADIUS = 10;
+        private const int TIP_PAD = 12;
+        private const int TIP_LINE_H = 20;
+        private const int NEW_H = 44;
+        private const int DATE_HEAD_H = 56;
+        private const int LIST_GAP = 10;
+        private const int MARK_X = 24;           // Branding.DrawMark 28×28 @ (24,18)
+        private const int MARK_Y = 18;
+        private const int MARK_SIZE = 28;
+        private const int TITLE_X = 64;          // 月份标题左边（标记右侧）
+        private const int TIP_BTN_W = 56;
+        private const int TIP_BTN_H = 20;
+
+        // ---------------------------------------------------------------- 命中 id
+        private const int HIT_PREV = 0;
+        private const int HIT_NEXT = 1;
+        private const int HIT_TODAY = 2;
+        private const int HIT_NEW = 3;
+        private const int HIT_AUTOSTART = 4;
+        private const int HIT_THEME = 5;
+        private const int HIT_TRAY = 6;
+        private const int HIT_MIN = 7;
+        private const int HIT_CLOSE = 8;
+        private const int HIT_TIP_NEXT = 9;
+        private const int HIT_ROW_BASE = 10;
+        private const int HIT_CIRCLE_BASE = 100;
+
+        private const string TIP_NEXT_LABEL = "换一条";
 
         private static readonly string[] WeekNames = new string[]
         {
             "周日", "周一", "周二", "周三", "周四", "周五", "周六"
+        };
+
+        /// <summary>内置提示池（≥24 条）：正向、具体、不说教。</summary>
+        private static readonly string[] TipPool = new string[]
+        {
+            "把一个待办拆成十分钟内能动手的第一步。",
+            "日程之间留十五分钟空档，临时状况就不会连锁。",
+            "先做最不想做的那件，剩下的都轻一些。",
+            "把会议压成二十五分钟，留五分钟给自己收尾。",
+            "今天只定三个重点，做完就算赢。",
+            "提前十分钟到，比准点到更从容。",
+            "写日程时顺手加上地点，出门前不用再翻记录。",
+            "把「稍后再说」换成具体时间，事情才会真的发生。",
+            "顺手能做完的事，别让它进入待办清单。",
+            "留一段不排事的时间，用来处理意外和喘息。",
+            "上午最清醒的两个小时，留给需要专注的事。",
+            "重复的日程先设好，以后就不必再想它。",
+            "完成一件就勾掉一件，进度看得见才有动力。",
+            "把手机放远一点，专注的时间会更安静。",
+            "出门前看一眼明天的安排，早晨会顺很多。",
+            "给难任务配个好环境：干净的桌面和一杯水。",
+            "日程别排满，七分满最好用。",
+            "用颜色区分工作与个人，一眼看清一天的形状。",
+            "十分钟的散步，常常比再刷一轮消息更提神。",
+            "把大目标写成本周的一件事，胜过写十条愿望。",
+            "会前先写一句话结论，讨论会快一半。",
+            "今天的第一次专注，从关掉一个通知开始。",
+            "傍晚回顾五分钟，明天的安排会清楚很多。",
+            "困的时候先喝口水，再决定要不要硬撑。",
+            "把明天要带的东西今晚放在门口。",
+            "一次只做一件事，速度反而更快。"
         };
 
         private readonly Store _store;
@@ -38,9 +109,13 @@ namespace DesktopCalendar.UI
         private List<ScheduleItem> _dayItems = new List<ScheduleItem>();
         private DateTime _selected;
         private string _monthTitle = "";
-        private int _leftW = 640;
-        private int _sideX = 660;
+        private int _leftW = 600;
+        private int _sideX = 636;
         private int _statusTop = 656;
+        private int _tipIndex;                  // 「换一条」次数：仅当次会话生效，不落盘
+
+        private Rectangle _monthCard;
+        private Rectangle _sideCard;
 
         private Rectangle _rPrev;
         private Rectangle _rNext;
@@ -50,6 +125,8 @@ namespace DesktopCalendar.UI
         private Rectangle _rTheme;
         private Rectangle _rTray;
         private Rectangle _rList;
+        private Rectangle _rTip;
+        private Rectangle _rTipNext;
         private Rectangle _rMin;
         private Rectangle _rClose;
 
@@ -72,8 +149,8 @@ namespace DesktopCalendar.UI
             ShowIcon = false;
             KeyPreview = true;
             Text = "桌面日历";
-            MinimumSize = new Size(1000, 700);
-            ClientSize = new Size(1000, 700);
+            MinimumSize = new Size(1040, 700);
+            ClientSize = new Size(1180, 780);
             BackColor = Theme.Current.Bg;
 
             _dragBar = new Panel();
@@ -104,50 +181,90 @@ namespace DesktopCalendar.UI
 
         // ---------------------------------------------------------------- 布局
 
+        /// <summary>卡片内缩 CARD_PAD 后的内容矩形：卡面排版与命中共用的唯一公式。</summary>
+        private static Rectangle CardInner(Rectangle card)
+        {
+            return new Rectangle(card.X + CARD_PAD, card.Y + CARD_PAD,
+                                 card.Width - CARD_PAD * 2, card.Height - CARD_PAD * 2);
+        }
+
+        private static Rectangle Inset(Rectangle r, int px)
+        {
+            return new Rectangle(r.X + px, r.Y + px, r.Width - px * 2, r.Height - px * 2);
+        }
+
         private void LayoutRegions()
         {
             int w = ClientSize.Width;
             int h = ClientSize.Height;
 
-            _leftW = w - SIDEBAR_W - PAD * 2;
-            if (_leftW < 200) _leftW = 200;
-            _sideX = _leftW + PAD;
             _statusTop = h - STATUS_H;
 
-            int headerRight = PAD + _leftW;
-            _rPrev = new Rectangle(PAD, HEADER_TOP, 32, HEADER_H);
-            _rNext = new Rectangle(PAD + 36, HEADER_TOP, 32, HEADER_H);
-            _rToday = new Rectangle(headerRight - 76, HEADER_TOP, 76, HEADER_H);
+            int avail = w - PAD * 2 - GAP;
+            if (avail < 420) avail = 420;
 
-            int dragW = _leftW - 188;
-            if (dragW < 40) dragW = 40;
+            // 宽度不足时先压侧栏、不压月历：月历卡要 ≥MIN_MONTH_W，侧栏从 344 起收；
+            // 侧栏收到 MIN_SIDE_W 仍不够，就保持 MIN_SIDE_W 并让月历卡小于 MIN_MONTH_W。
+            int sideW = SIDEBAR_W;
+            int roomForSide = avail - MIN_MONTH_W;
+            if (sideW > roomForSide) sideW = roomForSide;
+            if (sideW < MIN_SIDE_W) sideW = MIN_SIDE_W;
 
-            int monthH = _statusTop - MONTH_TOP - 12;
-            if (monthH < 120) monthH = 120;
+            // 兜底：极端窄窗口下先保证两卡都还有宽度、不重叠。
+            if (avail - sideW < MIN_MONTH_HARD)
+            {
+                sideW = avail - MIN_MONTH_HARD;
+            }
+            if (sideW < 160) sideW = 160;
+
+            _leftW = avail - sideW;
+            if (_leftW < MIN_MONTH_HARD) _leftW = MIN_MONTH_HARD;
+            _sideX = PAD + _leftW + GAP;
+
+            int cardH = _statusTop - 12 - CARD_TOP;
+            if (cardH < 260) cardH = 260;
+
+            _monthCard = new Rectangle(PAD, CARD_TOP, _leftW, cardH);
+            _sideCard = new Rectangle(_sideX, CARD_TOP, sideW, cardH);
+
+            // 头部：品牌标记在 (24,18,28,28)，月份标题在标记右侧的拖拽条上，
+            // ‹ › 收到月历卡右端，今天胶囊再往右，— / × 贴窗口右上（右边距与 PAD 对称）。
+            _rPrev = new Rectangle(_monthCard.Right - 30 - 8 - 30, BTN_TOP, 30, BTN_H);
+            _rNext = new Rectangle(_monthCard.Right - 30, BTN_TOP, 30, BTN_H);
+
+            int todayW = 88;
+            _rClose = new Rectangle(w - PAD - 30, BTN_TOP, 30, BTN_H);
+            _rMin = new Rectangle(_rClose.X - 8 - 30, BTN_TOP, 30, BTN_H);
+            _rToday = new Rectangle(_rMin.X - 14 - todayW, BTN_TOP, todayW, BTN_H);
+
+            int dragW = _rPrev.X - 16 - TITLE_X;
+            if (dragW < 60) dragW = 60;
 
             // 构造期 SetBoundsCore（MinimumSize/ClientSize）会早于子控件创建触发 OnResize。
             if (_dragBar != null)
             {
-                _dragBar.Bounds = new Rectangle(PAD + 88, HEADER_TOP, dragW, HEADER_H);
+                _dragBar.Bounds = new Rectangle(TITLE_X, BTN_TOP - 1, dragW, BTN_H + 2);
             }
             if (_monthView != null)
             {
-                _monthView.Bounds = new Rectangle(PAD, MONTH_TOP, _leftW, monthH);
+                // 月历嵌在月历卡内，按卡的 padding 内缩后整块交给它
+                _monthView.Bounds = CardInner(_monthCard);
             }
 
-            _rNew = new Rectangle(_sideX, _statusTop - PAD - 40, SIDEBAR_W, 40);
-            int listH = _rNew.Y - 16 - LIST_TOP;
+            Rectangle side = CardInner(_sideCard);
+            _rNew = new Rectangle(side.X, side.Bottom - NEW_H, side.Width, NEW_H);
+            _rTip = new Rectangle(side.X, _rNew.Y - 12 - TIP_H, side.Width, TIP_H);
+            _rTipNext = new Rectangle(_rTip.Right - TIP_PAD - TIP_BTN_W, _rTip.Y + 9, TIP_BTN_W, TIP_BTN_H);
+
+            int listTop = side.Y + DATE_HEAD_H + LIST_GAP;
+            int listH = _rTip.Y - LIST_GAP - listTop;
             if (listH < 0) listH = 0;
-            _rList = new Rectangle(_sideX, LIST_TOP, SIDEBAR_W, listH);
+            _rList = new Rectangle(side.X, listTop, side.Width, listH);
 
-            int pillY = _statusTop + (STATUS_H - 30) / 2;
-            _rTray = new Rectangle(w - PAD - 96, pillY, 96, 30);
-            _rTheme = new Rectangle(_rTray.X - 10 - 104, pillY, 104, 30);
-            _rAutoStart = new Rectangle(_rTheme.X - 10 - 128, pillY, 128, 30);
-
-            // 右上角窗口控制：从窗体宽度实时算，随拉伸移动
-            _rMin = new Rectangle(w - 44 - 30, HEADER_TOP, 30, 30);
-            _rClose = new Rectangle(w - 14 - 30, HEADER_TOP, 30, 30);
+            int pillY = _statusTop + (STATUS_H - BTN_H) / 2;
+            _rTray = new Rectangle(w - PAD - 96, pillY, 96, BTN_H);
+            _rTheme = new Rectangle(_rTray.X - 10 - 104, pillY, 104, BTN_H);
+            _rAutoStart = new Rectangle(_rTheme.X - 10 - 128, pillY, 128, BTN_H);
         }
 
         protected override void OnResize(EventArgs e)
@@ -198,6 +315,68 @@ namespace DesktopCalendar.UI
             if (_dragBar != null) _dragBar.Invalidate();
         }
 
+        // ---------------------------------------------------------------- 每日提示文案
+
+        /// <summary>
+        /// 当前「每日提示」文案。优先级：① 有逾期 → 先清逾期；② 今天未完成 → 还剩几项；
+        /// ③ 今天全完成 → 都完成了；④ 否则按 DayOfYear % 池长度取内置文案。
+        /// 点过「换一条」后（_tipIndex ≥ 1）改为按池顺序往后翻，保证一次点击一定换文案。
+        /// 空数据（0 条日程）落到 ④，给的是池里的一句正向文案，不会空白。
+        /// </summary>
+        internal string TipText(DateTime now)
+        {
+            if (_tipIndex <= 0)
+            {
+                int overdue = 0;
+                try
+                {
+                    if (_scheduler != null)
+                    {
+                        List<DueReminder> od = _scheduler.OverdueToday(now);
+                        if (od != null) overdue = od.Count;
+                    }
+                }
+                catch (Exception)
+                {
+                    overdue = 0;
+                }
+                if (overdue > 0) return string.Format("有 {0} 项已逾期，先清掉最旧的", overdue);
+
+                int total = 0;
+                int done = 0;
+                try
+                {
+                    if (_store != null)
+                    {
+                        total = _store.TotalForDay(now);
+                        done = _store.DoneForDay(now);
+                    }
+                }
+                catch (Exception)
+                {
+                    total = 0;
+                    done = 0;
+                }
+                if (total > 0 && done < total) return string.Format("今天还剩 {0} 项", total - done);
+                if (total > 0) return string.Format("今天的 {0} 项都完成了", total);
+            }
+            return TipPool[TipPoolIndex(now)];
+        }
+
+        private int TipPoolIndex(DateTime now)
+        {
+            int i = (now.DayOfYear + _tipIndex) % TipPool.Length;
+            if (i < 0) i += TipPool.Length;
+            return i;
+        }
+
+        private void NextTip()
+        {
+            _tipIndex++;
+            if (_tipIndex > 100000) _tipIndex = 1;
+            Invalidate();
+        }
+
         // ---------------------------------------------------------------- 事件
 
         private void HandleDateSelected(DateTime day)
@@ -225,7 +404,7 @@ namespace DesktopCalendar.UI
         {
             Theme t = Theme.Current;
             BackColor = t.Bg;
-            if (_monthView != null) _monthView.BackColor = t.Bg;
+            if (_monthView != null) _monthView.BackColor = t.Card;   // 月历自身铺卡片面
             if (_dragBar != null)
             {
                 _dragBar.BackColor = t.Bg;
@@ -401,26 +580,52 @@ namespace DesktopCalendar.UI
             Draw.Smooth(g);
 
             int w = ClientSize.Width;
+            int h = ClientSize.Height;
 
-            Draw.Fill(g, new Rectangle(0, 0, w, ClientSize.Height), t.Bg);
+            // 整幅只铺一层窗口底色：卡片间隙、头部、状态条下面都只有它，不存在任何桥接填充
+            Draw.Fill(g, new Rectangle(0, 0, w, h), t.Bg);
 
-            Rectangle sideCard = new Rectangle(_sideX - 10, 10, SIDEBAR_W + 20, _statusTop - 20);
-            Draw.FillRound(g, sideCard, 12, t.Surface);
-            Draw.StrokeRound(g, sideCard, 12, Draw.Blend(t.Border, t.Bg, 0.25f), 1f);
+            Rectangle mCard = Draw.Card(g, _monthCard, CARD_RADIUS, t.Card, t.CardLine, t.Shadow);
+            Rectangle sCard = Draw.Card(g, _sideCard, CARD_RADIUS, t.Card, t.CardLine, t.Shadow);
 
-            Draw.Line(g, 0, _statusTop + 0.5f, w, _statusTop + 0.5f, t.Border, 1f);
+            // 状态条顶边：一条 1px 混合线（不是填充），左右让开 PAD 保持边距干净
+            Draw.Line(g, PAD, _statusTop + 0.5f, w - PAD, _statusTop + 0.5f,
+                      Draw.Blend(t.Border, t.Bg, 0.55f), 1f);
 
             DrawHeader(g, t);
-            DrawSidebar(g, t);
+
+            // Draw.Card 返回卡片内缩 1px 的内容矩形；再让开 CARD_PAD-1 正好等于 CardInner()，
+            // 也就是 LayoutRegions 用来排 _rList / _rTip / _rNew 的同一条公式。
+            Rectangle sideInner = Inset(sCard, CARD_PAD - 1);
+            if (mCard.Width > 0 && sideInner.Width > 0 && sideInner.Height > 0)
+            {
+                DrawSidebar(g, t, sideInner);
+                DrawTip(g, t);
+            }
+
             DrawStatus(g, t);
             DrawWindowButtons(g, t);
         }
 
         private void DrawHeader(Graphics g, Theme t)
         {
-            DrawSquareButton(g, _rPrev, "\u2039", _hover == 0, t);
-            DrawSquareButton(g, _rNext, "\u203A", _hover == 1, t);
-            DrawPill(g, _rToday, "今天", _hover == 2, false, t);
+            DrawBrandMark(g);
+            DrawSquareButton(g, _rPrev, "\u2039", _hover == HIT_PREV, t);
+            DrawSquareButton(g, _rNext, "\u203A", _hover == HIT_NEXT, t);
+            DrawPill(g, _rToday, "今天", _hover == HIT_TODAY, false, t);
+        }
+
+        /// <summary>头部品牌标记：Branding 若拿不到图标/抛异常，仅仅不画，不影响其余绘制。</summary>
+        private static void DrawBrandMark(Graphics g)
+        {
+            if (g == null) return;
+            try
+            {
+                Branding.DrawMark(g, new Rectangle(MARK_X, MARK_Y, MARK_SIZE, MARK_SIZE));
+            }
+            catch (Exception)
+            {
+            }
         }
 
         private static void DrawSquareButton(Graphics g, Rectangle r, string glyph, bool hot, Theme t)
@@ -442,8 +647,8 @@ namespace DesktopCalendar.UI
 
         private void DrawWindowButtons(Graphics g, Theme t)
         {
-            DrawWindowButton(g, t, _rMin, _hover == 7, false);
-            DrawWindowButton(g, t, _rClose, _hover == 8, true);
+            DrawWindowButton(g, t, _rMin, _hover == HIT_MIN, false);
+            DrawWindowButton(g, t, _rClose, _hover == HIT_CLOSE, true);
         }
 
         private static void DrawWindowButton(Graphics g, Theme t, Rectangle r, bool hot, bool isClose)
@@ -483,14 +688,15 @@ namespace DesktopCalendar.UI
                 new Rectangle(0, 0, _dragBar.Width, _dragBar.Height));
         }
 
-        private void DrawSidebar(Graphics g, Theme t)
+        /// <summary>日程卡内容：日期头 56 → 统计行 → 列表 →（DrawTip）→ + 新建日程。</summary>
+        private void DrawSidebar(Graphics g, Theme t, Rectangle inner)
         {
-            int x = _sideX;
-            int w = SIDEBAR_W;
+            int x = inner.X;
+            int w = inner.Width;
 
             string title = string.Format("{0}年{1}月{2}日  {3}", _selected.Year, _selected.Month,
                 _selected.Day, WeekNames[(int)_selected.DayOfWeek]);
-            Draw.Ellipsis(g, title, t.BodyBold, t.TextPrimary, new Rectangle(x, 24, w, 24));
+            Draw.Ellipsis(g, title, t.BodyBold, t.TextPrimary, new Rectangle(x, inner.Y, w, 28));
 
             int total = _dayItems == null ? 0 : _dayItems.Count;
             int done = 0;
@@ -501,9 +707,13 @@ namespace DesktopCalendar.UI
             }
 
             Draw.Text(g, string.Format("共 {0} 项 / 已完成 {1}", total, done), t.Small, t.TextSecondary,
-                new Rectangle(x, 52, w, 18), StringAlignment.Near, StringAlignment.Center);
+                new Rectangle(x, inner.Y + 28, w, 24), StringAlignment.Near, StringAlignment.Center);
 
-            Draw.Line(g, x, 78.5f, x + w, 78.5f, Draw.Blend(t.Border, t.Surface, 0.35f), 1f);
+            if (_rList.Height > 0)
+            {
+                Draw.Line(g, x, _rList.Y - 8.5f, x + w, _rList.Y - 8.5f,
+                          Draw.Blend(t.Border, t.Card, 0.45f), 1f);
+            }
 
             if (total == 0)
             {
@@ -531,11 +741,72 @@ namespace DesktopCalendar.UI
             }
 
             Rectangle r = _rNew;
-            bool hot = _hover == 3;
+            bool hot = _hover == HIT_NEW;
             Color bg = hot ? Draw.Blend(t.Accent, t.TextPrimary, 0.10f) : t.Accent;
             Draw.FillRound(g, r, ROW_RADIUS, bg);
             Draw.Text(g, "+ 新建日程", t.SmallBold, t.Bg, r,
                 StringAlignment.Center, StringAlignment.Center);
+        }
+
+        /// <summary>每日提示小卡：TipBg 面 + TipLine 1px 描边 + 圆角 10；右上「换一条」。</summary>
+        private void DrawTip(Graphics g, Theme t)
+        {
+            Rectangle r = _rTip;
+            if (r.Width <= 40 || r.Height <= 30) return;
+
+            Draw.Block(g, r, TIP_RADIUS, t.TipBg);
+            Draw.StrokeRound(g, r, TIP_RADIUS, t.TipLine, 1f);
+
+            int titleW = r.Width - TIP_PAD * 2 - TIP_BTN_W - 8;
+            if (titleW < 20) titleW = 20;
+            Draw.Text(g, "每日提示", t.SmallBold, t.Accent,
+                new Rectangle(r.X + TIP_PAD, r.Y + 9, titleW, 18),
+                StringAlignment.Near, StringAlignment.Center);
+
+            bool hot = _hover == HIT_TIP_NEXT;
+            Draw.Text(g, TIP_NEXT_LABEL, t.Small, hot ? t.Accent : t.TextMuted, _rTipNext,
+                StringAlignment.Far, StringAlignment.Center);
+
+            string text = TipText(DateTime.Now);
+            DrawTipBody(g, text, t.Small, t.TextSecondary,
+                new Rectangle(r.X + TIP_PAD, r.Y + 32, r.Width - TIP_PAD * 2, TIP_LINE_H * 2),
+                TIP_LINE_H);
+        }
+
+        /// <summary>最多两行正文：按像素宽度折行，超出部分 EllipsisCharacter 截断。</summary>
+        private static void DrawTipBody(Graphics g, string text, Font f, Color c, Rectangle box, int lineH)
+        {
+            if (g == null || f == null || string.IsNullOrEmpty(text)) return;
+            if (box.Width <= 4 || box.Height <= 4) return;
+
+            int split = FitPrefix(g, text, f, box.Width);
+            string first = text;
+            string second = "";
+            if (split > 0 && split < text.Length)
+            {
+                first = text.Substring(0, split);
+                second = text.Substring(split);
+            }
+
+            Draw.Ellipsis(g, first, f, c, new Rectangle(box.X, box.Y, box.Width, lineH));
+            if (!string.IsNullOrEmpty(second) && lineH * 2 <= box.Height)
+            {
+                Draw.Ellipsis(g, second, f, c, new Rectangle(box.X, box.Y + lineH, box.Width, lineH));
+            }
+        }
+
+        /// <summary>能放进 maxW 的最长前缀长度（至少 1，最多 len）。</summary>
+        private static int FitPrefix(Graphics g, string s, Font f, int maxW)
+        {
+            if (string.IsNullOrEmpty(s)) return 0;
+            if (g.MeasureString(s, f).Width <= maxW) return s.Length;
+
+            int k = 1;
+            while (k < s.Length && g.MeasureString(s.Substring(0, k + 1), f).Width <= maxW)
+            {
+                k++;
+            }
+            return k;
         }
 
         private Rectangle RowRect(int index)
@@ -553,8 +824,8 @@ namespace DesktopCalendar.UI
             ScheduleItem it = _dayItems[index];
             if (it == null) return;
 
-            bool hot = _hover == 10 + index;
-            bool circleHot = _hover == 100 + index;
+            bool hot = _hover == HIT_ROW_BASE + index;
+            bool circleHot = _hover == HIT_CIRCLE_BASE + index;
             DateTime occ = OccurrenceOf(it, _selected);
             bool done = it.IsDoneOn(occ);
 
@@ -621,7 +892,7 @@ namespace DesktopCalendar.UI
                 new Rectangle(PAD, _statusTop, 96, STATUS_H), StringAlignment.Near, StringAlignment.Center);
 
             Rectangle track = new Rectangle(PAD + 100, _statusTop + (STATUS_H - 6) / 2, 120, 6);
-            Draw.FillRound(g, track, 3, Draw.Blend(t.Border, t.Surface, 0.30f));
+            Draw.FillRound(g, track, 3, Draw.Blend(t.Border, t.Bg, 0.30f));
             if (total > 0 && done > 0)
             {
                 int pw = track.Width * done / total;
@@ -639,24 +910,26 @@ namespace DesktopCalendar.UI
             {
             }
 
-            DrawPill(g, _rAutoStart, auto ? "开机自启 · 开" : "开机自启 · 关", _hover == 4, auto, t);
-            DrawPill(g, _rTheme, Theme.IsDark ? "浅色模式" : "深色模式", _hover == 5, false, t);
-            DrawPill(g, _rTray, "最小化到托盘", _hover == 6, false, t);
+            DrawPill(g, _rAutoStart, auto ? "开机自启 · 开" : "开机自启 · 关",
+                     _hover == HIT_AUTOSTART, auto, t);
+            DrawPill(g, _rTheme, Theme.IsDark ? "浅色模式" : "深色模式", _hover == HIT_THEME, false, t);
+            DrawPill(g, _rTray, "最小化到托盘", _hover == HIT_TRAY, false, t);
         }
 
         // ---------------------------------------------------------------- 命中
 
         private int HitTest(Point p)
         {
-            if (_rPrev.Contains(p)) return 0;
-            if (_rNext.Contains(p)) return 1;
-            if (_rToday.Contains(p)) return 2;
-            if (_rNew.Contains(p)) return 3;
-            if (_rAutoStart.Contains(p)) return 4;
-            if (_rTheme.Contains(p)) return 5;
-            if (_rTray.Contains(p)) return 6;
-            if (_rMin.Contains(p)) return 7;
-            if (_rClose.Contains(p)) return 8;
+            if (_rPrev.Contains(p)) return HIT_PREV;
+            if (_rNext.Contains(p)) return HIT_NEXT;
+            if (_rToday.Contains(p)) return HIT_TODAY;
+            if (_rNew.Contains(p)) return HIT_NEW;
+            if (_rTipNext.Contains(p)) return HIT_TIP_NEXT;
+            if (_rAutoStart.Contains(p)) return HIT_AUTOSTART;
+            if (_rTheme.Contains(p)) return HIT_THEME;
+            if (_rTray.Contains(p)) return HIT_TRAY;
+            if (_rMin.Contains(p)) return HIT_MIN;
+            if (_rClose.Contains(p)) return HIT_CLOSE;
 
             if (_dayItems != null && _dayItems.Count > 0 && _rList.Contains(p))
             {
@@ -666,8 +939,8 @@ namespace DesktopCalendar.UI
                     Rectangle row = RowRect(idx);
                     if (row.Contains(p))
                     {
-                        if (CircleRect(row).Contains(p)) return 100 + idx;
-                        return 10 + idx;
+                        if (CircleRect(row).Contains(p)) return HIT_CIRCLE_BASE + idx;
+                        return HIT_ROW_BASE + idx;
                     }
                 }
             }
@@ -705,25 +978,26 @@ namespace DesktopCalendar.UI
             int hit = HitTest(e.Location);
             if (hit < 0) return;
 
-            if (hit == 0) { ShiftMonth(-1); return; }
-            if (hit == 1) { ShiftMonth(1); return; }
-            if (hit == 2) { GoToday(); return; }
-            if (hit == 3) { CreateItem(); return; }
-            if (hit == 4) { ToggleAutoStart(); return; }
-            if (hit == 5) { ToggleTheme(); return; }
-            if (hit == 6) { MinimizeToTray(); return; }
-            if (hit == 7) { MinimizeToTray(); return; }
-            if (hit == 8) { Close(); return; }
+            if (hit == HIT_PREV) { ShiftMonth(-1); return; }
+            if (hit == HIT_NEXT) { ShiftMonth(1); return; }
+            if (hit == HIT_TODAY) { GoToday(); return; }
+            if (hit == HIT_NEW) { CreateItem(); return; }
+            if (hit == HIT_TIP_NEXT) { NextTip(); return; }
+            if (hit == HIT_AUTOSTART) { ToggleAutoStart(); return; }
+            if (hit == HIT_THEME) { ToggleTheme(); return; }
+            if (hit == HIT_TRAY) { MinimizeToTray(); return; }
+            if (hit == HIT_MIN) { MinimizeToTray(); return; }
+            if (hit == HIT_CLOSE) { Close(); return; }
 
-            if (hit >= 100)
+            if (hit >= HIT_CIRCLE_BASE)
             {
-                ToggleDone(hit - 100);
+                ToggleDone(hit - HIT_CIRCLE_BASE);
                 return;
             }
 
-            if (hit >= 10)
+            if (hit >= HIT_ROW_BASE)
             {
-                int idx = hit - 10;
+                int idx = hit - HIT_ROW_BASE;
                 DateTime now = DateTime.Now;
                 if (_lastRowHit == hit && (now - _lastRowClick).TotalMilliseconds < 450)
                 {

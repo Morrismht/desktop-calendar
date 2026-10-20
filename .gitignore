@@ -25,5 +25,9 @@ desktop.ini
 # 运行期 / 调试日志
 *.log
 
+# Python 图标生成脚本的缓存
+__pycache__/
+*.pyc
+
 # 注意：preview/*.png 是 README 引用的截图，必须纳入版本库。
 # 不要在此处添加 *.png 或 preview/ 之类的忽略规则。

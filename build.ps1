@@ -36,6 +36,7 @@ $sources = @(
     (Join-Path $root 'src\Services\AutoStart.cs'),
     (Join-Path $root 'src\UI\Theme.cs'),
     (Join-Path $root 'src\UI\Draw.cs'),
+    (Join-Path $root 'src\UI\Branding.cs'),
     (Join-Path $root 'src\UI\Chrome.cs'),
     (Join-Path $root 'src\UI\MonthView.cs'),
     (Join-Path $root 'src\UI\EventEditor.cs'),
@@ -67,7 +68,19 @@ $cscArgs = @(
     '/r:System.Drawing.dll',
     '/r:System.Windows.Forms.dll',
     '/r:System.Core.dll'
-) + $sources
+)
+
+# 应用图标：assets\app.ico 存在才传 /win32icon；缺失只提示一行，绝不让构建失败。
+$appIcon = Join-Path $root 'assets\app.ico'
+if (Test-Path -LiteralPath $appIcon -PathType Leaf) {
+    Write-Host ("图标：{0}" -f $appIcon)
+    $cscArgs += ('/win32icon:' + $appIcon)
+}
+else {
+    Write-Host '[warn] assets\app.ico 缺失，跳过图标'
+}
+
+$cscArgs += $sources
 
 Write-Host '=== 编译命令 ==='
 Write-Host ('"{0}" {1}' -f $csc, ($cscArgs -join ' '))

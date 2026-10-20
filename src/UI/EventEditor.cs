@@ -9,20 +9,36 @@ using DesktopCalendar.Models;
 namespace DesktopCalendar.UI
 {
     /// <summary>
-    /// 新建 / 编辑日程模态对话框，420×460 无边框圆角。
+    /// 新建 / 编辑日程模态对话框，420×460 无边框圆角（选择「每周」时 420×502）。
     /// 所有输入控件都裁掉系统边框（BorderStyle=None）放进自绘圆角容器。
+    /// 「重复」下拉是全自绘弹出列表：原生 ComboBox 的系统下拉比自绘字段宽、
+    /// 并且会盖住右侧「颜色」行（build\verify-edit\editor-dropdown-open.png 已取证），故整体删除。
     /// </summary>
     public class EventEditor : Form
     {
         private const int W = 420;
         private const int H = 460;
+        private const int H_WEEK = 502;
         private const int PAD = 24;
         private const int RADIUS = 14;
         private const int FIELD_RADIUS = 8;
         private const int BTN_RADIUS = 10;
 
+        /// <summary>星期行占用的高度；出现时窗口高度 = H + WEEK_ROW_H。</summary>
+        private const int WEEK_ROW_H = 42;
+        private const int CHIP_W = 34;
+        private const int CHIP_H = 28;
+        private const int CHIP_GAP = 6;
+
+        private const int DROP_ITEM_H = 30;
+        private const int DROP_H = 4 * DROP_ITEM_H + 8;
+        private const int DROP_RADIUS = 10;
+
         private const int WM_NCHITTEST = 0x0084;
         private const int HTCAPTION = 2;
+
+        private static readonly string[] RepeatTexts = new string[] { "单次", "每天", "每周", "每月" };
+        private static readonly string[] WeekLabels = new string[] { "一", "二", "三", "四", "五", "六", "日" };
 
         private readonly Store _store;
         private readonly ScheduleItem _existing;
@@ -32,8 +48,16 @@ namespace DesktopCalendar.UI
         private TextBox _txtDate;
         private TextBox _txtTime;
         private TextBox _txtNotes;
-        private ComboBox _cboRepeat;
-        private Control _repeatOverlay;
+
+        /// <summary>重复方式序号，与 RepeatKind 的 0..3 一一对应。</summary>
+        private int _repeatIndex;
+        /// <summary>下拉是否展开。</summary>
+        private bool _dropOpen;
+        private int _dropHover = -1;
+        /// <summary>每周重复的星期掩码，bit0=周一 … bit6=周日；恒不为 0。</summary>
+        private int _weekMask;
+        private bool _showWeekRow;
+        private bool _layoutApplied;
 
         private int _colorIndex;
 
@@ -48,9 +72,11 @@ namespace DesktopCalendar.UI
         private Rectangle _btnSave;
         private Rectangle _btnClose;
         private Rectangle[] _dots;
+        private Rectangle[] _weekChips;
+        private Rectangle _weekLabel;
         private Rectangle _errRect;
 
-        // -1 无；0 取消；1 保存；2 ‹；3 ›；4 关闭；10+n 第 n 个色点
+        // -1 无；0 取消；1 保存；2 ‹；3 ›；4 关闭；5 重复字段；10+n 第 n 个色点；20+n 第 n 个星期
         private int _hover = -1;
         private string _error = "";
 
@@ -84,7 +110,7 @@ namespace DesktopCalendar.UI
             BuildLayout();
             BuildControls();
             FillFrom(existing);
-            ApplyRoundedRegion();
+            ApplyWeekLayout();
 
             try { Chrome.EnableRounded(this); }
             catch (Exception) { }
@@ -95,6 +121,7 @@ namespace DesktopCalendar.UI
         private void BuildLayout()
         {
             int right = W - PAD;
+            int dy = _showWeekRow ? WEEK_ROW_H : 0;
 
             _btnClose = new Rectangle(right - 28, 16, 28, 28);
 
@@ -113,22 +140,53 @@ namespace DesktopCalendar.UI
                 _dots[i] = new Rectangle(220 + i * 30, 203, 20, 20);
             }
 
-            _boxNotes = new Rectangle(PAD, 256, right - PAD, 100);
+            // 星期行紧贴「重复」字段下方，独占 WEEK_ROW_H
+            int chipTop = 235 + (WEEK_ROW_H - CHIP_H) / 2;
+            _weekLabel = new Rectangle(PAD, chipTop, 48, CHIP_H);
+            _weekChips = new Rectangle[7];
+            int chipX = _weekLabel.Right + 8;
+            for (int i = 0; i < 7; i++)
+            {
+                _weekChips[i] = new Rectangle(chipX + i * (CHIP_W + CHIP_GAP), chipTop, CHIP_W, CHIP_H);
+            }
 
-            _errRect = new Rectangle(PAD, 362, right - PAD, 18);
+            _boxNotes = new Rectangle(PAD, 256 + dy, right - PAD, 100);
 
-            _btnCancel = new Rectangle(right - 88 - 12 - 88, 396, 88, 36);
-            _btnSave = new Rectangle(right - 88, 396, 88, 36);
+            _errRect = new Rectangle(PAD, 362 + dy, right - PAD, 18);
+
+            _btnCancel = new Rectangle(right - 88 - 12 - 88, 396 + dy, 88, 36);
+            _btnSave = new Rectangle(right - 88, 396 + dy, 88, 36);
         }
 
         private void ApplyRoundedRegion()
         {
-            using (GraphicsPath p = Draw.Round(new Rectangle(0, 0, W, H), RADIUS))
+            int w = ClientSize.Width;
+            int h = ClientSize.Height;
+            using (GraphicsPath p = Draw.Round(new Rectangle(0, 0, w, h), RADIUS))
             {
                 Region prev = Region;
                 Region = new Region(p);
                 if (prev != null) prev.Dispose();
             }
+        }
+
+        /// <summary>按 _showWeekRow 重算全部矩形、窗口高度与圆角 Region。</summary>
+        private void ApplyWeekLayout()
+        {
+            bool show = _repeatIndex == 2;
+            if (show == _showWeekRow && _layoutApplied)
+            {
+                Invalidate();
+                return;
+            }
+            _showWeekRow = show;
+            _layoutApplied = true;
+
+            BuildLayout();
+            Reposition();
+            ClientSize = new Size(W, show ? H_WEEK : H);
+            ApplyRoundedRegion();
+            Invalidate();
         }
 
         // ---------------------------------------------------------------- 控件
@@ -161,8 +219,6 @@ namespace DesktopCalendar.UI
 
         private void BuildControls()
         {
-            Theme t = Theme.Current;
-
             _txtTitle = MakeTextBox(false);
             _txtTitle.MaxLength = 200;
             Controls.Add(_txtTitle);
@@ -178,22 +234,12 @@ namespace DesktopCalendar.UI
             _txtNotes = MakeTextBox(true);
             Controls.Add(_txtNotes);
 
-            _cboRepeat = new ComboBox();
-            _cboRepeat.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cboRepeat.FlatStyle = FlatStyle.Flat;
-            _cboRepeat.DrawMode = DrawMode.OwnerDrawFixed;
-            _cboRepeat.ItemHeight = 20;
-            _cboRepeat.BackColor = t.SurfaceAlt;
-            _cboRepeat.ForeColor = t.TextPrimary;
-            _cboRepeat.Font = t.Body != null ? t.Body : this.Font;
-            _cboRepeat.Items.Add("单次");
-            _cboRepeat.Items.Add("每天");
-            _cboRepeat.Items.Add("每周");
-            _cboRepeat.Items.Add("每月");
-            _cboRepeat.DrawItem += CboDrawItem;
-            _cboRepeat.DropDownClosed += delegate { Invalidate(); };
-            Controls.Add(_cboRepeat);
+            Reposition();
+        }
 
+        /// <summary>把 TextBox 摆到当前布局矩形里；星期行出现/隐藏后必须重跑。</summary>
+        private void Reposition()
+        {
             // 控件加入父级后才具备真实高度，此时再做垂直居中
             PlaceSingle(_txtTitle, _boxTitle);
             PlaceSingle(_txtDate, _boxDate);
@@ -202,69 +248,93 @@ namespace DesktopCalendar.UI
             _txtNotes.Bounds = new Rectangle(_boxNotes.X + 12, _boxNotes.Y + 8,
                 _boxNotes.Width - 24, _boxNotes.Height - 16);
 
-            int cboH = _cboRepeat.Height;
-            if (cboH <= 0) cboH = 26;
-            _cboRepeat.Bounds = new Rectangle(_boxRepeat.X + 2,
-                _boxRepeat.Y + (_boxRepeat.Height - cboH) / 2,
-                _boxRepeat.Width - 4, cboH);
-
-            // 透明点击层盖住 ComboBox 自身的系统边框：视觉全部由 OnPaint 自绘，
-            // 点击时再展开 ComboBox 的真实下拉列表。
-            ClickThrough overlay = new ClickThrough();
-            overlay.Bounds = _boxRepeat;
-            overlay.Cursor = Cursors.Hand;
-            overlay.Clicked += delegate { OpenRepeatDropDown(); };
-            Controls.Add(overlay);
-            // 探针实测（_scratch\\zprobe.cs）：本运行时 ControlCollection 末尾才是视觉最前层，
-            // 故用 SendToBack() 把命中层挪到末尾，才能真正盖住 ComboBox 的系统边框。
-            overlay.SendToBack();
-            _repeatOverlay = overlay;
+            // 自绘下拉要盖在备注文本框之上：展开期间必须先藏起这个子窗口
+            _txtNotes.Visible = !_dropOpen;
         }
 
-        private void OpenRepeatDropDown()
+        // ---------------------------------------------------------------- 重复下拉
+
+        private Rectangle DropRect()
         {
-            _cboRepeat.Focus();
-            _cboRepeat.DroppedDown = true;
+            return new Rectangle(_boxRepeat.X, _boxRepeat.Bottom + 6, _boxRepeat.Width, DROP_H);
         }
 
-        /// <summary>透明命中层：只负责把点击转成「展开下拉」。</summary>
-        private sealed class ClickThrough : Control
+        private int DropItemAt(Point p)
         {
-            public event EventHandler Clicked;
-
-            public ClickThrough()
-            {
-                SetStyle(ControlStyles.SupportsTransparentBackColor, true);
-                BackColor = Color.Transparent;
-            }
-
-            protected override void OnClick(EventArgs e)
-            {
-                EventHandler h = Clicked;
-                if (h != null) h(this, EventArgs.Empty);
-                base.OnClick(e);
-            }
+            Rectangle r = DropRect();
+            if (!r.Contains(p)) return -1;
+            if (p.Y < r.Y + 4) return -1;
+            int i = (p.Y - (r.Y + 4)) / DROP_ITEM_H;
+            if (i < 0 || i >= RepeatTexts.Length) return -1;
+            return i;
         }
 
-        private void CboDrawItem(object sender, DrawItemEventArgs e)
+        private static Rectangle DropItemRect(Rectangle panel, int index)
         {
-            Theme t = Theme.Current;
-            Graphics g = e.Graphics;
-            Draw.Smooth(g);
-            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-            Rectangle r = e.Bounds;
-            using (SolidBrush b = new SolidBrush(selected ? t.AccentSoft : t.SurfaceAlt))
+            return new Rectangle(panel.X + 4, panel.Y + 4 + index * DROP_ITEM_H,
+                panel.Width - 8, DROP_ITEM_H);
+        }
+
+        private void SetDropOpen(bool open)
+        {
+            if (_dropOpen == open) return;
+            _dropOpen = open;
+            _dropHover = -1;
+            Reposition();
+            Rectangle r = DropRect();
+            r.Inflate(10, 10);
+            Invalidate(r);
+        }
+
+        private void SetRepeatIndex(int index)
+        {
+            if (index < 0) index = 0;
+            if (index >= RepeatTexts.Length) index = RepeatTexts.Length - 1;
+            _repeatIndex = index;
+            if (_repeatIndex == 2) EnsureWeekMask();
+            ApplyWeekLayout();
+        }
+
+        private void EnsureWeekMask()
+        {
+            if (_weekMask != 0) return;
+            DateTime d;
+            if (!TryParseDate(_txtDate.Text, out d)) d = DateTime.Today;
+            _weekMask = RepeatRule.MaskOf(d.DayOfWeek);
+        }
+
+        // ---------------------------------------------------------------- 星期
+
+        /// <summary>chip 序号 0..6 → 周一..周日。</summary>
+        private static DayOfWeek DowAt(int index)
+        {
+            return (DayOfWeek)((index + 1) % 7);
+        }
+
+        private static int CountWeekDays(int mask)
+        {
+            int n = 0;
+            for (int i = 0; i < 7; i++)
             {
-                g.FillRectangle(b, r);
+                if (RepeatRule.MaskHas(mask, DowAt(i))) n++;
             }
-            if (e.Index >= 0 && e.Index < _cboRepeat.Items.Count)
+            return n;
+        }
+
+        /// <summary>至少保 1 天：点掉最后一天时忽略该次点击。</summary>
+        private void ToggleWeekDay(int index)
+        {
+            DayOfWeek dow = DowAt(index);
+            if (RepeatRule.MaskHas(_weekMask, dow))
             {
-                string s = Convert.ToString(_cboRepeat.Items[e.Index]);
-                Rectangle tr = new Rectangle(r.X + 8, r.Y, r.Width - 8, r.Height);
-                Draw.Text(g, s, t.Body != null ? t.Body : this.Font,
-                    selected ? t.Accent : t.TextPrimary, tr,
-                    StringAlignment.Near, StringAlignment.Center);
+                if (CountWeekDays(_weekMask) <= 1) return;
+                _weekMask = _weekMask & ~RepeatRule.MaskOf(dow);
             }
+            else
+            {
+                _weekMask = _weekMask | RepeatRule.MaskOf(dow);
+            }
+            Invalidate(new Rectangle(PAD, 235, W - PAD - 14, WEEK_ROW_H));
         }
 
         // ---------------------------------------------------------------- 数据
@@ -281,7 +351,8 @@ namespace DesktopCalendar.UI
                 _txtDate.Text = d.ToString("yyyy-MM-dd");
                 _txtTime.Text = d.ToString("HH:mm");
                 _txtNotes.Text = "";
-                _cboRepeat.SelectedIndex = 0;
+                _repeatIndex = 0;
+                _weekMask = RepeatRule.MaskOf(d.DayOfWeek);
                 return;
             }
 
@@ -289,7 +360,12 @@ namespace DesktopCalendar.UI
             _txtDate.Text = it.Date.ToString("yyyy-MM-dd");
             _txtTime.Text = string.Format("{0:00}:{1:00}", it.Hour, it.Minute);
             _txtNotes.Text = it.Notes == null ? "" : it.Notes;
-            _cboRepeat.SelectedIndex = (int)it.Repeat;
+            _repeatIndex = (int)it.Repeat;
+            if (_repeatIndex < 0) _repeatIndex = 0;
+            if (_repeatIndex >= RepeatTexts.Length) _repeatIndex = RepeatTexts.Length - 1;
+            _weekMask = it.WeekDays;
+            // Weekly 且未指定星期 → 默认勾选 Date 的星期
+            if (_weekMask == 0) _weekMask = RepeatRule.MaskOf(it.Date.DayOfWeek);
             _colorIndex = PaletteIndexOf(it.Color);
         }
 
@@ -359,6 +435,8 @@ namespace DesktopCalendar.UI
             Font smallFont = t.Small != null ? t.Small : this.Font;
             Font smallBold = t.SmallBold != null ? t.SmallBold : this.Font;
 
+            int dy = _showWeekRow ? WEEK_ROW_H : 0;
+
             Draw.Ellipsis(g, _isEdit ? "编辑日程" : "新建日程", titleFont, t.TextPrimary,
                 new Rectangle(PAD, 14, W - PAD * 2 - 40, 32));
 
@@ -377,7 +455,7 @@ namespace DesktopCalendar.UI
             DrawLabel(g, "时间", new Rectangle(268, 121, 100, 15), smallFont, t.TextSecondary);
             DrawLabel(g, "重复", new Rectangle(PAD, 180, 120, 15), smallFont, t.TextSecondary);
             DrawLabel(g, "颜色", new Rectangle(220, 180, 100, 15), smallFont, t.TextSecondary);
-            DrawLabel(g, "备注", new Rectangle(PAD, 239, 120, 15), smallFont, t.TextSecondary);
+            DrawLabel(g, "备注", new Rectangle(PAD, 239 + dy, 120, 15), smallFont, t.TextSecondary);
 
             DrawField(g, _boxTitle, _txtTitle, t);
             DrawField(g, _boxDate, _txtDate, t);
@@ -392,14 +470,9 @@ namespace DesktopCalendar.UI
             Draw.Text(g, "\u203A", bodyFont, _hover == 3 ? t.Accent : t.TextSecondary, _btnNextDay,
                 StringAlignment.Center, StringAlignment.Center);
 
-            // 重复下拉：容器边框与文字全部自绘，ComboBox 只提供下拉列表
-            DrawFieldBg(g, _boxRepeat, t, _cboRepeat.Focused);
-            string rep = "单次";
-            if (_cboRepeat.SelectedIndex >= 0 && _cboRepeat.SelectedIndex < _cboRepeat.Items.Count)
-            {
-                rep = Convert.ToString(_cboRepeat.Items[_cboRepeat.SelectedIndex]);
-            }
-            Draw.Text(g, rep, bodyFont, t.TextPrimary,
+            // 重复字段：容器边框、文字、箭头全部自绘，下拉列表见 DrawDropDown
+            DrawFieldBg(g, _boxRepeat, t, _dropOpen || _hover == 5);
+            Draw.Text(g, RepeatTexts[_repeatIndex], bodyFont, t.TextPrimary,
                 new Rectangle(_boxRepeat.X + 12, _boxRepeat.Y, _boxRepeat.Width - 44, _boxRepeat.Height),
                 StringAlignment.Near, StringAlignment.Center);
             DrawChevron(g, new Rectangle(_boxRepeat.Right - 26, _boxRepeat.Y, 16, _boxRepeat.Height),
@@ -426,6 +499,8 @@ namespace DesktopCalendar.UI
                 }
             }
 
+            DrawWeekRow(g, t, smallFont);
+
             // 校验红字
             if (_error != null && _error.Length > 0)
             {
@@ -443,6 +518,59 @@ namespace DesktopCalendar.UI
             Draw.FillRound(g, _btnSave, BTN_RADIUS, t.Accent);
             Draw.Text(g, "保存", smallBold, Color.White, _btnSave,
                 StringAlignment.Center, StringAlignment.Center);
+
+            // 弹出列表最后画，压在其它内容之上
+            if (_dropOpen) DrawDropDown(g, t, bodyFont);
+        }
+
+        private void DrawWeekRow(Graphics g, Theme t, Font smallFont)
+        {
+            if (!_showWeekRow) return;
+
+            DrawLabel(g, "重复日", _weekLabel, smallFont, t.TextSecondary);
+            for (int i = 0; i < _weekChips.Length; i++)
+            {
+                Rectangle c = _weekChips[i];
+                bool sel = RepeatRule.MaskHas(_weekMask, DowAt(i));
+                Draw.FillRound(g, c, FIELD_RADIUS, sel ? t.Accent : t.SurfaceAlt);
+                Draw.Text(g, WeekLabels[i], smallFont, sel ? Color.White : t.TextSecondary, c,
+                    StringAlignment.Center, StringAlignment.Center);
+            }
+        }
+
+        private void DrawDropDown(Graphics g, Theme t, Font bodyFont)
+        {
+            Rectangle r = DropRect();
+
+            // 裁剪到字段的横向范围：填充、描边抗锯齿和 5px 阴影都不得越过 _boxRepeat 的左右边界
+            using (Region old = g.Clip)
+            {
+                g.SetClip(new Rectangle(_boxRepeat.X, 0, _boxRepeat.Width, ClientSize.Height),
+                    CombineMode.Replace);
+
+                Draw.Shadow(g, r, DROP_RADIUS, t.Shadow, 5, 0.18f);
+                Draw.FillRound(g, r, DROP_RADIUS, t.Surface);
+                Draw.StrokeRound(g, r, DROP_RADIUS, t.Border, 1f);
+
+                for (int i = 0; i < RepeatTexts.Length; i++)
+                {
+                    Rectangle ir = DropItemRect(r, i);
+                    bool sel = i == _repeatIndex;
+                    bool hot = i == _dropHover && !sel;
+                    if (sel) Draw.FillRound(g, ir, 6, t.AccentSoft);
+                    else if (hot) Draw.FillRound(g, ir, 6, t.SurfaceAlt);
+                    if (sel)
+                    {
+                        Draw.FillRound(g, new Rectangle(ir.X + 3, ir.Y + 6, 3, ir.Height - 12), 1, t.Accent);
+                    }
+                    Draw.Text(g, RepeatTexts[i], bodyFont,
+                        sel ? t.TextPrimary : (hot ? t.TextPrimary : t.TextSecondary),
+                        new Rectangle(ir.X + 14, ir.Y, ir.Width - 18, ir.Height),
+                        StringAlignment.Near, StringAlignment.Center);
+                }
+
+                g.Clip = old;
+            }
         }
 
         private static void DrawLabel(Graphics g, string s, Rectangle r, Font f, Color c)
@@ -485,10 +613,10 @@ namespace DesktopCalendar.UI
             }
         }
 
-        private static void DrawFieldBg(Graphics g, Rectangle r, Theme t, bool focused)
+        private static void DrawFieldBg(Graphics g, Rectangle r, Theme t, bool active)
         {
             Draw.FillRound(g, r, FIELD_RADIUS, t.SurfaceAlt);
-            Draw.StrokeRound(g, r, FIELD_RADIUS, focused ? t.Accent : t.Border, 1f);
+            Draw.StrokeRound(g, r, FIELD_RADIUS, active ? t.Accent : t.Border, 1f);
         }
 
         private void DrawField(Graphics g, Rectangle box, TextBox tb, Theme t)
@@ -506,6 +634,7 @@ namespace DesktopCalendar.UI
             if (_btnPrevDay.Contains(p)) return 2;
             if (_btnNextDay.Contains(p)) return 3;
             if (_btnClose.Contains(p)) return 4;
+            if (_boxRepeat.Contains(p)) return 5;
             if (_dots != null)
             {
                 for (int i = 0; i < _dots.Length; i++)
@@ -515,27 +644,55 @@ namespace DesktopCalendar.UI
                     if (hit.Contains(p)) return 10 + i;
                 }
             }
+            if (_showWeekRow && _weekChips != null)
+            {
+                for (int i = 0; i < _weekChips.Length; i++)
+                {
+                    if (_weekChips[i].Contains(p)) return 20 + i;
+                }
+            }
             return -1;
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
             int hit = HitTest(e.Location);
-            if (hit != _hover)
+            int dh = _dropOpen ? DropItemAt(e.Location) : -1;
+            if (hit != _hover || dh != _dropHover)
             {
                 _hover = hit;
-                Invalidate();
+                _dropHover = dh;
+                if (_dropOpen)
+                {
+                    Rectangle r = DropRect();
+                    r.Inflate(12, 12);
+                    Invalidate(r);
+                }
+                else
+                {
+                    Invalidate();
+                }
             }
-            Cursor = hit >= 0 ? Cursors.Hand : Cursors.Default;
+            Cursor = (hit >= 0 || dh >= 0) ? Cursors.Hand : Cursors.Default;
             base.OnMouseMove(e);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
-            if (_hover != -1)
+            if (_hover != -1 || _dropHover != -1)
             {
                 _hover = -1;
-                Invalidate();
+                _dropHover = -1;
+                if (_dropOpen)
+                {
+                    Rectangle r = DropRect();
+                    r.Inflate(12, 12);
+                    Invalidate(r);
+                }
+                else
+                {
+                    Invalidate();
+                }
             }
             base.OnMouseLeave(e);
         }
@@ -544,12 +701,27 @@ namespace DesktopCalendar.UI
         {
             if (e.Button == MouseButtons.Left)
             {
+                if (_dropOpen)
+                {
+                    int idx = DropItemAt(e.Location);
+                    SetDropOpen(false);
+                    if (idx >= 0) { SetRepeatIndex(idx); return; }
+                    // 点在字段上：面板已收起，本次不再展开；点在外部：仅收起
+                    return;
+                }
+
                 int hit = HitTest(e.Location);
                 if (hit == 0) { DoCancel(); return; }
                 if (hit == 1) { DoSave(); return; }
                 if (hit == 2) { ShiftDay(-1); return; }
                 if (hit == 3) { ShiftDay(1); return; }
                 if (hit == 4) { DoCancel(); return; }
+                if (hit == 5) { SetDropOpen(true); return; }
+                if (hit >= 20 && hit <= 26)
+                {
+                    ToggleWeekDay(hit - 20);
+                    return;
+                }
                 if (hit >= 10)
                 {
                     _colorIndex = hit - 10;
@@ -579,15 +751,41 @@ namespace DesktopCalendar.UI
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (keyData == Keys.Escape)
+            if (_dropOpen)
             {
-                DoCancel();
-                return true;
+                if (keyData == Keys.Escape)
+                {
+                    SetDropOpen(false);
+                    return true;
+                }
+                if (keyData == Keys.Down)
+                {
+                    SetRepeatIndex(_repeatIndex + 1);
+                    return true;
+                }
+                if (keyData == Keys.Up)
+                {
+                    SetRepeatIndex(_repeatIndex - 1);
+                    return true;
+                }
+                if (keyData == Keys.Enter)
+                {
+                    SetDropOpen(false);
+                    return true;
+                }
             }
-            if (keyData == Keys.Enter && ActiveControl != _txtNotes)
+            else
             {
-                DoSave();
-                return true;
+                if (keyData == Keys.Escape)
+                {
+                    DoCancel();
+                    return true;
+                }
+                if (keyData == Keys.Enter && ActiveControl != _txtNotes)
+                {
+                    DoSave();
+                    return true;
+                }
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -668,8 +866,18 @@ namespace DesktopCalendar.UI
             }
 
             string notes = _txtNotes.Text == null ? "" : _txtNotes.Text;
-            int repeat = _cboRepeat.SelectedIndex;
+            int repeat = _repeatIndex;
             if (repeat < 0) repeat = 0;
+            if (repeat >= RepeatTexts.Length) repeat = RepeatTexts.Length - 1;
+
+            // 只有每周才写星期掩码；mask 恰为 0 时按 Date 的星期补成 1 位
+            int weekMask = 0;
+            if ((RepeatKind)repeat == RepeatKind.Weekly)
+            {
+                weekMask = _weekMask;
+                if (weekMask == 0) weekMask = RepeatRule.MaskOf(date.DayOfWeek);
+            }
+
             string color = HexOf(SelectedColor());
 
             if (_existing == null)
@@ -685,6 +893,7 @@ namespace DesktopCalendar.UI
                 it.Minute = minute;
                 it.Repeat = (RepeatKind)repeat;
                 it.RepeatUntil = null;
+                it.WeekDays = weekMask;
                 it.Color = color;
                 if (_store != null) _store.Add(it);
                 Result = it;
@@ -698,6 +907,7 @@ namespace DesktopCalendar.UI
                 _existing.Hour = hour;
                 _existing.Minute = minute;
                 _existing.Repeat = (RepeatKind)repeat;
+                _existing.WeekDays = weekMask;
                 _existing.Color = color;
                 _existing.Enabled = true;
                 if (_store != null) _store.Update(_existing);

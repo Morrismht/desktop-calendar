@@ -326,6 +326,7 @@ namespace DesktopCalendar.Data
             o["Hour"] = it.Hour;
             o["Minute"] = it.Minute;
             o["Repeat"] = (int)it.Repeat;
+            o["WeekDays"] = it.WeekDays;
             o["RepeatUntil"] = it.RepeatUntil.HasValue ? (object)it.RepeatUntil.Value : null;
             o["Enabled"] = it.Enabled;
             o["Color"] = it.Color;
@@ -352,6 +353,7 @@ namespace DesktopCalendar.Data
                 repeat = 0;
             }
             it.Repeat = (RepeatKind)repeat;
+            it.WeekDays = Json.Int(o, "WeekDays", 0);
             it.RepeatUntil = Json.Date(o, "RepeatUntil");
             it.Enabled = Json.Bool(o, "Enabled", true);
             it.Color = Json.Str(o, "Color", "#4F7CFF");

@@ -118,14 +118,14 @@ namespace DesktopCalendarTools
             int lightDistinct;
             int lightToday;
             int lightAccent;
-            string lightPath = Path.Combine(previewDir, "month-light.png");
+            string lightPath = Path.Combine(previewDir, "month-light-v2.png");
             RenderOne(store, monthFirst, selected, hoverDay, false, lightPath, out lightDistinct, out lightToday, out lightAccent);
 
             // ---------- 渲染深色 ----------
             int darkDistinct;
             int darkToday;
             int darkAccent;
-            string darkPath = Path.Combine(previewDir, "month-dark.png");
+            string darkPath = Path.Combine(previewDir, "month-dark-v2.png");
             RenderOne(store, monthFirst, selected, hoverDay, true, darkPath, out darkDistinct, out darkToday, out darkAccent);
 
             Console.WriteLine();
@@ -136,9 +136,14 @@ namespace DesktopCalendarTools
             Console.WriteLine();
             Console.WriteLine("== 像素自检 ==");
             PixelChecks(lightPath, "浅色",
-                        Color.FromArgb(0xF4, 0xF6, 0xFB), Color.FromArgb(0xE8, 0xEE, 0xFF), Color.FromArgb(0x4F, 0x7C, 0xFF));
+                        Color.FromArgb(0xFF, 0xFF, 0xFF), Color.FromArgb(0xE8, 0xEE, 0xFF), Color.FromArgb(0x4F, 0x7C, 0xFF));
             PixelChecks(darkPath, "深色",
-                        Color.FromArgb(0x12, 0x14, 0x1A), Color.FromArgb(0x23, 0x30, 0x4F), Color.FromArgb(0x6E, 0x92, 0xFF));
+                        Color.FromArgb(0x1A, 0x1D, 0x25), Color.FromArgb(0x23, 0x30, 0x4F), Color.FromArgb(0x6E, 0x92, 0xFF));
+            Console.WriteLine();
+            Console.WriteLine("== 月历表面取样（卡片面 / 色带 / 色块 / 选中环）==");
+            MonthSurfaceChecks(lightPath, "浅色", store, monthFirst, selected, hoverDay, false);
+            MonthSurfaceChecks(darkPath, "深色", store, monthFirst, selected, hoverDay, true);
+
             Console.WriteLine("[info] 渲染期统计：浅色 颜色数 " + lightDistinct.ToString() + " TodayBg " + lightToday.ToString()
                 + " Accent " + lightAccent.ToString() + "；深色 颜色数 " + darkDistinct.ToString() + " TodayBg "
                 + darkToday.ToString() + " Accent " + darkAccent.ToString());
@@ -163,6 +168,11 @@ namespace DesktopCalendarTools
             Console.WriteLine();
             Console.WriteLine("== Draw / Theme 自检 ==");
             DrawChecks();
+
+            Console.WriteLine();
+            Console.WriteLine("== 卡片 / 阴影 / 色块自检 ==");
+            CardChecks();
+            CardShadowComposite(store, monthFirst, selected, hoverDay, scratchDir);
 
             Console.WriteLine();
             Console.WriteLine("PASS " + _pass.ToString() + " / FAIL " + _fail.ToString());
@@ -369,7 +379,337 @@ namespace DesktopCalendarTools
             Check("Chrome.EnableRounded/EnableDrag/EnableResize 冒烟不抛异常", chromeOk);
         }
 
+        // ---------------- 月历表面取样（CONTRACT-V2 §4）----------------
+
+        private static void MonthSurfaceChecks(string path, string label, Store store, DateTime monthFirst,
+                                               DateTime selected, DateTime hoverDay, bool dark)
+        {
+            if (!File.Exists(path))
+            {
+                Check(label + " v2 PNG 存在（表面取样）", false);
+                return;
+            }
+
+            Theme.SetDark(dark);
+            Theme th = Theme.Current;
+
+            // 用与 RenderOne 完全相同的入参跑一遍，只为拿到格子/色带几何（取样仍取自已保存的 PNG）
+            MonthView mv = new MonthView();
+            mv.Size = new Size(W, H);
+            mv.Store = store;
+            mv.Month = monthFirst;
+            mv.SelectedDate = selected;
+            using (Bitmap probe = new Bitmap(W, H, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(probe)) { g.Clear(th.Card); mv.RenderTo(g); }
+                SetPrivateField(mv, "_hover", IndexOfDate(mv, hoverDay));
+                using (Graphics g = Graphics.FromImage(probe)) { g.Clear(th.Card); mv.RenderTo(g); }
+            }
+            Rectangle[] cells = GetPrivateField(mv, "_cells") as Rectangle[];
+            DateTime[] dates = GetPrivateField(mv, "_dates") as DateTime[];
+            object hdr = GetPrivateField(mv, "_header");
+            Rectangle header = (hdr is Rectangle) ? (Rectangle)hdr : Rectangle.Empty;
+            mv.Dispose();
+
+            if (cells == null || dates == null || header.Width <= 0)
+            {
+                Check(label + " 月历布局可取（表面取样）", false);
+                return;
+            }
+
+            int idxSel = -1;
+            int idxToday = -1;
+            int idxHover = -1;
+            int idxPlain = -1;
+            int idxFaint = -1;
+            for (int i = 0; i < TotalCellsPublic; i++)
+            {
+                DateTime d = dates[i].Date;
+                bool inMonth = dates[i].Month == monthFirst.Month && dates[i].Year == monthFirst.Year;
+                if (idxSel < 0 && d == selected.Date) idxSel = i;
+                if (idxToday < 0 && d == DateTime.Today) idxToday = i;
+                if (idxHover < 0 && d == hoverDay.Date) idxHover = i;
+                if (idxPlain < 0 && inMonth && d != selected.Date && d != DateTime.Today && d != hoverDay.Date) idxPlain = i;
+                if (idxFaint < 0 && !inMonth) idxFaint = i;
+            }
+            if (idxPlain < 0 || idxFaint < 0)
+            {
+                Check(label + " 找到本月/非本月样本格", false);
+                return;
+            }
+
+            using (Bitmap bmp = new Bitmap(path))
+            {
+                Check(label + " 控件底色 = Theme.Card（MonthView 不再画外卡）",
+                      SameAt(bmp, 2, 2, th.Card));
+                Check(label + " 星期行色带 = Theme.HeaderBand（取样 " + (header.X + 4).ToString() + ","
+                      + (header.Y + header.Height / 2).ToString() + " → "
+                      + Hex(PixelAt(bmp, header.X + 4, header.Y + header.Height / 2)) + "）",
+                      SameAt(bmp, header.X + 4, header.Y + header.Height / 2, th.HeaderBand));
+
+                Rectangle box = cells[idxPlain];
+                int px = box.Right - 6;
+                int py = box.Y + 8;
+                Check(label + " 本月格色块 = Theme.CellBg（取样 " + px.ToString() + "," + py.ToString()
+                      + " → " + Hex(PixelAt(bmp, px, py)) + "）", SameAt(bmp, px, py, th.CellBg));
+                // 格子贴边那一列是填充边界上的抗锯齿混色：只允许 Card↔CellBg 之间的颜色。
+                // 有 1px 描边时这里会落到该线段之外（Border 比两端的蓝都淡/都深），所以本断言即「去描边」证据。
+                Check(label + " 本月格贴边像素 = Card/CellBg 抗锯齿混色，无 1px 发丝描边（取样 "
+                      + box.X + "," + (box.Y + box.Height / 2) + " → "
+                      + Hex(PixelAt(bmp, box.X, box.Y + box.Height / 2)) + "，内侧 "
+                      + Hex(PixelAt(bmp, box.X + 1, box.Y + box.Height / 2)) + "）",
+                      IsBetween(PixelAt(bmp, box.X, box.Y + box.Height / 2), th.Card, th.CellBg) &&
+                      SameAt(bmp, box.X + 1, box.Y + box.Height / 2, th.CellBg));
+
+                Rectangle faint = cells[idxFaint];
+                Check(label + " 非本月格色块 = Theme.CellBgFaint（取样 " + (faint.Right - 6).ToString() + ","
+                      + (faint.Y + 8).ToString() + " → " + Hex(PixelAt(bmp, faint.Right - 6, faint.Y + 8)) + "）",
+                      SameAt(bmp, faint.Right - 6, faint.Y + 8, th.CellBgFaint));
+
+                if (idxToday >= 0)
+                {
+                    Rectangle t = cells[idxToday];
+                    Check(label + " 今天格色块 = Theme.TodayBg",
+                          SameAt(bmp, t.Right - 6, t.Y + 8, th.TodayBg));
+                }
+                if (idxHover >= 0 && idxHover != idxToday)
+                {
+                    Rectangle hv = cells[idxHover];
+                    Check(label + " 悬停格色块 = Theme.SurfaceAlt",
+                          SameAt(bmp, hv.Right - 6, hv.Y + 8, th.SurfaceAlt));
+                }
+                if (idxSel >= 0)
+                {
+                    Rectangle s = cells[idxSel];
+                    int my = s.Y + s.Height / 2;
+                    // 环宽 2px：外沿那列是圆角填充边界的抗锯齿混色（Card↔Accent），第 2 列是精确 Accent，
+                    // 再往里第 3 列就是 Surface——三列连着读出来即「2px Accent 环」。
+                    Check(label + " 选中格 2px Accent 环（" + s.X + "=" + Hex(PixelAt(bmp, s.X, my))
+                          + " 混色 " + (s.X + 1) + "=" + Hex(PixelAt(bmp, s.X + 1, my)) + " 实色）",
+                          SameAt(bmp, s.X + 1, my, th.Accent) &&
+                          IsBetween(PixelAt(bmp, s.X, my), th.Card, th.Accent));
+                    Check(label + " 选中环内侧 = Theme.Surface（环宽恰 2px，取样 " + Hex(PixelAt(bmp, s.X + 3, my)) + "）",
+                          SameAt(bmp, s.X + 3, my, th.Surface));
+                }
+            }
+        }
+
+        // ---------------- 卡片 / 阴影 / 色块（CONTRACT-V2 §2 §3）----------------
+
+        private static void CardChecks()
+        {
+            Theme.SetDark(false);
+            Theme th = Theme.Current;
+            Check("浅色 8 个新 Token 全部非空",
+                  th.Card != Color.Empty && th.CardLine != Color.Empty && th.CellBg != Color.Empty &&
+                  th.CellBgFaint != Color.Empty && th.HeaderBand != Color.Empty && th.TipBg != Color.Empty &&
+                  th.TipLine != Color.Empty && th.Shadow != Color.Empty);
+            Check("浅色新 Token hex: Card " + Hex(th.Card) + " CardLine " + Hex(th.CardLine)
+                  + " CellBg " + Hex(th.CellBg) + " CellBgFaint " + Hex(th.CellBgFaint)
+                  + " HeaderBand " + Hex(th.HeaderBand) + " TipBg " + Hex(th.TipBg)
+                  + " TipLine " + Hex(th.TipLine) + " Shadow " + Hex(th.Shadow),
+                  Hex(th.Card) == "#FFFFFF" && Hex(th.CardLine) == "#E6EBF5" && Hex(th.CellBg) == "#F5F7FC" &&
+                  Hex(th.CellBgFaint) == "#FAFBFE" && Hex(th.HeaderBand) == "#EEF3FF" &&
+                  Hex(th.TipBg) == "#EEF4FF" && Hex(th.TipLine) == "#DCE7FF" && Hex(th.Shadow) == "#1B2233");
+            Check("既有 Token 语义未被改动（浅色 Bg/AccentSoft/TodayBg）",
+                  Hex(th.Bg) == "#F4F6FB" && Hex(th.AccentSoft) == "#E8EEFF" && Hex(th.TodayBg) == "#E8EEFF");
+
+            Theme.SetDark(true);
+            Theme th2 = Theme.Current;
+            Check("深色 8 个新 Token 全部非空",
+                  th2.Card != Color.Empty && th2.CardLine != Color.Empty && th2.CellBg != Color.Empty &&
+                  th2.CellBgFaint != Color.Empty && th2.HeaderBand != Color.Empty && th2.TipBg != Color.Empty &&
+                  th2.TipLine != Color.Empty && th2.Shadow != Color.Empty);
+            Check("深色新 Token hex: Card " + Hex(th2.Card) + " CardLine " + Hex(th2.CardLine)
+                  + " CellBg " + Hex(th2.CellBg) + " CellBgFaint " + Hex(th2.CellBgFaint)
+                  + " HeaderBand " + Hex(th2.HeaderBand) + " TipBg " + Hex(th2.TipBg)
+                  + " TipLine " + Hex(th2.TipLine) + " Shadow " + Hex(th2.Shadow),
+                  Hex(th2.Card) == "#1A1D25" && Hex(th2.CardLine) == "#262B35" && Hex(th2.CellBg) == "#20242D" &&
+                  Hex(th2.CellBgFaint) == "#171A21" && Hex(th2.HeaderBand) == "#1E2537" &&
+                  Hex(th2.TipBg) == "#202A42" && Hex(th2.TipLine) == "#2E3B57" && Hex(th2.Shadow) == "#000000");
+            Check("既有 Token 语义未被改动（深色 Bg/AccentSoft/TodayBg）",
+                  Hex(th2.Bg) == "#12141A" && Hex(th2.AccentSoft) == "#232E4D" && Hex(th2.TodayBg) == "#23304F");
+
+            CardProbe(false);
+            CardProbe(true);
+            Theme.SetDark(false);
+        }
+
+        private static void CardProbe(bool dark)
+        {
+            Theme.SetDark(dark);
+            Theme th = Theme.Current;
+            string label = dark ? "深色" : "浅色";
+            Rectangle card = new Rectangle(60, 60, 160, 80);
+            int midY = card.Y + card.Height / 2;
+
+            using (Bitmap bmp = new Bitmap(320, 200, PixelFormat.Format32bppArgb))
+            {
+                Rectangle content;
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(th.Bg);
+                    Draw.Smooth(g);
+                    content = Draw.Card(g, card, 12, th.Card, th.CardLine, th.Shadow);
+                }
+                Check(label + " Card 返回值 = r 内缩 1px 的内容矩形",
+                      content == new Rectangle(card.X + 1, card.Y + 1, card.Width - 2, card.Height - 2));
+                Check(label + " 卡片内 1px 描边 = Theme.CardLine（取样 " + card.X + "," + midY + " → "
+                      + Hex(PixelAt(bmp, card.X, midY)) + "）", SameAt(bmp, card.X, midY, th.CardLine));
+                Check(label + " 卡片面 = Theme.Card",
+                      SameAt(bmp, card.X + card.Width / 2, midY, th.Card));
+
+                ShadowRamp(bmp, label + " 左侧", card.X, midY, -1, 0, th.Bg);
+                ShadowRamp(bmp, label + " 下侧", card.X + card.Width / 2, card.Bottom - 1, 0, 1, th.Bg);
+            }
+
+            using (Bitmap bmp = new Bitmap(120, 80, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(th.Bg);
+                    Draw.Smooth(g);
+                    Draw.Block(g, new Rectangle(20, 20, 80, 40), 10, th.AccentSoft);
+                }
+                // 贴边列 20 是填充边界的 50% 混色，第 21 列起是纯 AccentSoft；外面 19 仍是底色。
+                // 「无描边」= 贴边色只能由 Bg↔AccentSoft 混出（有边缘描边就会引入第三种颜色）。
+                Check(label + " Block 无描边：贴边列是 Bg/AccentSoft 混色、内侧纯色块色（" + Hex(PixelAt(bmp, 19, 40))
+                      + " / " + Hex(PixelAt(bmp, 20, 40)) + " / " + Hex(PixelAt(bmp, 21, 40)) + "）",
+                      IsBetween(PixelAt(bmp, 20, 40), th.Bg, th.AccentSoft) &&
+                      SameAt(bmp, 21, 40, th.AccentSoft) && SameAt(bmp, 19, 40, th.Bg));
+                Check(label + " Block 圆角外仍是底色（角点未被填充）", SameAt(bmp, 20, 20, th.Bg));
+            }
+
+            using (Bitmap bmp = new Bitmap(60, 60, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(th.Bg);
+                    Draw.Shadow(g, new Rectangle(20, 20, 20, 20), 6, th.Shadow, 0, 0.10f);
+                }
+                Check(label + " Shadow(spread=0) 直接返回（周边仍是底色）",
+                      SameAt(bmp, 18, 30, th.Bg) && SameAt(bmp, 30, 18, th.Bg));
+            }
+        }
+
+        /// <summary>
+        /// 成品视角预览（落 scratch，不入 preview 交付目录）：主窗用 Draw.Card 提供外卡 + 阴影，
+        /// MonthView 不再自画外卡、只把月历画在 Card 返回的内容矩形里——即用户要的「色块 + 阴影」。
+        /// </summary>
+        private static void CardShadowComposite(Store store, DateTime monthFirst, DateTime selected,
+                                                DateTime hoverDay, string scratchDir)
+        {
+            Theme.SetDark(false);
+            Theme th = Theme.Current;
+            int w = 1000;
+            int h = 660;
+            string path = Path.Combine(scratchDir, "card-shadow-light.png");
+            using (Bitmap bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            {
+                Rectangle card = new Rectangle(20, 20, w - 40, h - 40);
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(th.Bg);
+                    Draw.Smooth(g);
+                    Rectangle content = Draw.Card(g, card, Draw.Scale(g, 14), th.Card, th.CardLine, th.Shadow);
+                    MonthView mv = new MonthView();
+                    mv.Size = content.Size;
+                    mv.Store = store;
+                    mv.Month = monthFirst;
+                    mv.SelectedDate = selected;
+                    SetPrivateField(mv, "_hover", IndexOfDate(mv, hoverDay));
+                    System.Drawing.Drawing2D.GraphicsState st = g.Save();
+                    g.SetClip(content);
+                    g.TranslateTransform(content.X, content.Y);
+                    mv.RenderTo(g);
+                    g.Restore(st);
+                    mv.Dispose();
+                }
+                bmp.Save(path, ImageFormat.Png);
+
+                int midY = card.Y + card.Height / 2;
+                int near = Delta(PixelAt(bmp, card.X - 4, midY), th.Bg);   // 外沿外 4px
+                int far = Delta(PixelAt(bmp, card.X - 14, midY), th.Bg);   // 外沿外 14px
+                Console.WriteLine("[composite] " + path);
+                Console.WriteLine("[composite] 外沿外 4px Δ" + near.ToString() + " / 14px Δ" + far.ToString());
+                Check("组合预览（外卡 + 阴影 + 月历）已生成且 > 8KB: " + new FileInfo(path).Length + " bytes",
+                      File.Exists(path) && new FileInfo(path).Length > 8000);
+                Check("组合预览里卡片外沿有阴影（4px Δ" + near.ToString() + " > 14px Δ" + far.ToString() + "）",
+                      near > far && near > 0);
+            }
+            Theme.SetDark(false);
+        }
+
+        private static int Delta(Color a, Color b)
+        {
+            if (a.IsEmpty || b.IsEmpty) return -1;
+            return Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
+        }
+
+        private static void ShadowRamp(Bitmap bmp, string label, int x0, int y0, int dx, int dy, Color bg)
+        {
+            int[] dist = new int[] { 2, 4, 6, 8 };
+            int[] mag = new int[dist.Length];
+            StringBuilder sb = new StringBuilder();
+            bool nonIncreasing = true;
+            for (int scale = 0; scale < dist.Length; scale++)
+            {
+                Color c = PixelAt(bmp, x0 + dx * dist[scale], y0 + dy * dist[scale]);
+                if (c.IsEmpty)
+                {
+                    Check(label + " 阴影取样点在图内", false);
+                    return;
+                }
+                mag[scale] = Math.Abs(c.R - bg.R) + Math.Abs(c.G - bg.G) + Math.Abs(c.B - bg.B);
+                if (scale > 0 && mag[scale] > mag[scale - 1]) nonIncreasing = false;
+                if (scale > 0) sb.Append("  ");
+                sb.Append(dist[scale].ToString() + "px=" + Hex(c) + "(Δ" + mag[scale].ToString() + ")");
+            }
+            Console.WriteLine("[shadow] " + label + "：" + sb.ToString());
+            bool fade = nonIncreasing && mag[0] > mag[mag.Length - 1] && mag[0] > 0;
+            Check(label + " 阴影 2/4/6/8px 单调由浓转淡（Δ " + mag[0].ToString() + " ≥ " + mag[1].ToString()
+                  + " ≥ " + mag[2].ToString() + " ≥ " + mag[3].ToString() + "）", fade);
+        }
+
         // ---------------- 工具 ----------------
+
+        private const int TotalCellsPublic = 42;
+
+        private static Color PixelAt(Bitmap b, int x, int y)
+        {
+            if (b == null || x < 0 || y < 0 || x >= b.Width || y >= b.Height) return Color.Empty;
+            return b.GetPixel(x, y);
+        }
+
+        private static bool SameAt(Bitmap b, int x, int y, Color expected)
+        {
+            Color c = PixelAt(b, x, y);
+            if (c.IsEmpty) return false;
+            return ToRgb(c) == ToRgb(expected);
+        }
+
+        /// <summary>
+        /// 像素是否落在 a→b 的合成线段上（每通道都在两者之间，容差 1）。
+        /// 用来证明「某个边缘像素只是抗锯齿混色、不含第三种颜色」——例如格子贴边像素
+        /// 只能由 Card 与 CellBg 混出，一旦有不透明描边就会落到这段之外。
+        /// </summary>
+        private static bool IsBetween(Color p, Color a, Color b)
+        {
+            if (p.IsEmpty) return false;
+            return InRange(p.R, a.R, b.R) && InRange(p.G, a.G, b.G) && InRange(p.B, a.B, b.B);
+        }
+
+        private static bool InRange(int v, int x, int y)
+        {
+            int lo = x < y ? x : y;
+            int hi = x < y ? y : x;
+            return v >= lo - 1 && v <= hi + 1;
+        }
+
+        private static string Hex(Color c)
+        {
+            return "#" + c.R.ToString("X2") + c.G.ToString("X2") + c.B.ToString("X2");
+        }
 
         private static ScheduleItem Item(string title, DateTime date, int hour, int minute, string color)
         {

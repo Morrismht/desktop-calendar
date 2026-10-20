@@ -21,6 +21,8 @@ namespace DesktopCalendar.Models
         public int Hour;
         public int Minute;
         public RepeatKind Repeat;
+        /// <summary>每周重复时生效的星期掩码。bit0=周一 … bit6=周日；0 = 未指定（沿用 Date 的星期）。</summary>
+        public int WeekDays;
         public DateTime? RepeatUntil;     // null = 永久重复
         public bool Enabled;
         public string Color;              // 分类色，来自 Theme.Palette
@@ -38,6 +40,7 @@ namespace DesktopCalendar.Models
             Hour = 9;
             Minute = 0;
             Repeat = RepeatKind.None;
+            WeekDays = 0;
             RepeatUntil = null;
             Enabled = true;
             Color = "#4F7CFF";
@@ -87,6 +90,14 @@ namespace DesktopCalendar.Models
             {
                 Minute = 0;
             }
+            if (WeekDays < 0)
+            {
+                WeekDays = 0;
+            }
+            if (WeekDays > 127)
+            {
+                WeekDays = 127;
+            }
             Date = Date.Date;
             if (CreatedAt == default(DateTime))
             {
@@ -104,6 +115,7 @@ namespace DesktopCalendar.Models
             c.Hour = Hour;
             c.Minute = Minute;
             c.Repeat = Repeat;
+            c.WeekDays = WeekDays;
             c.RepeatUntil = RepeatUntil;
             c.Enabled = Enabled;
             c.Color = Color;

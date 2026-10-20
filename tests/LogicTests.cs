@@ -32,6 +32,7 @@ namespace DesktopCalendar.Tests
             Console.WriteLine("=== desktop-calendar 逻辑层自检 ===");
 
             Run("RepeatRule", TestRepeatRule);
+            Run("WeekDays", TestWeekDays);
             Run("Json", TestJson);
             Run("Store", TestStore);
             Run("Store.ResolveDataDir", TestResolveDataDir);
@@ -250,6 +251,215 @@ namespace DesktopCalendar.Tests
             Eq("每月 31 日", RepeatRule.Describe(monthly31), "Describe 每月 31 日");
             Check(RepeatRule.Describe(until).StartsWith("每天（至 2024-03-12）", StringComparison.Ordinal),
                 "Describe 带 RepeatUntil 时追加至某日");
+        }
+
+        // ---------------- 1b. 每周指定星期几（WeekDays） ----------------
+
+        /// <summary>一三五 = bit0|bit2|bit4。</summary>
+        private const int MonWedFri = 1 + 4 + 16;
+
+        private static ScheduleItem NewWeekly(string title, DateTime date, int weekDays)
+        {
+            ScheduleItem it = NewItem(title, date, 9, 0, RepeatKind.Weekly);
+            it.WeekDays = weekDays;
+            return it;
+        }
+
+        private static void TestWeekDays()
+        {
+            // DayIndex / MaskOf / MaskHas
+            Eq(0, RepeatRule.DayIndex(DayOfWeek.Monday), "DayIndex 周一 = 0");
+            Eq(6, RepeatRule.DayIndex(DayOfWeek.Sunday), "DayIndex 周日 = 6");
+            Eq(1, RepeatRule.MaskOf(DayOfWeek.Monday), "MaskOf 周一 = 1");
+            Eq(64, RepeatRule.MaskOf(DayOfWeek.Sunday), "MaskOf 周日 = 64");
+            Check(RepeatRule.MaskHas(MonWedFri, DayOfWeek.Wednesday), "MaskHas 命中周三");
+            Check(RepeatRule.MaskHas(MonWedFri, DayOfWeek.Monday), "MaskHas 命中周一");
+            Check(!RepeatRule.MaskHas(MonWedFri, DayOfWeek.Tuesday), "MaskHas 不命中周二");
+            Check(!RepeatRule.MaskHas(0, DayOfWeek.Monday), "MaskHas(0) 恒不命中");
+
+            // MaskText
+            Eq("", RepeatRule.MaskText(0), "MaskText(0) = 空串");
+            Eq("一、三、五", RepeatRule.MaskText(MonWedFri), "MaskText 一三五用中文顿号");
+            Eq("日", RepeatRule.MaskText(RepeatRule.MaskOf(DayOfWeek.Sunday)), "MaskText 单日 = 日");
+            Eq("一、二、三、四、五、六、日", RepeatRule.MaskText(127), "MaskText 全选 = 一二三四五六日");
+
+            // mask 命中 / 不命中（起始日 2024-03-11 是周一）
+            ScheduleItem mwf = NewWeekly("一三五 09:00", new DateTime(2024, 3, 11), MonWedFri);
+            Eq(DayOfWeek.Monday, mwf.Date.DayOfWeek, "WeekDays 用例起始日是周一");
+            Check(RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 11)), "mask 命中起始日周一");
+            Check(RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 13)), "mask 命中周三");
+            Check(RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 15)), "mask 命中周五");
+            Check(!RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 12)), "mask 不命中周二");
+            Check(!RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 16)), "mask 不命中周六");
+            Check(!RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 17)), "mask 不命中周日");
+            Check(RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 20)), "mask 跨周仍命中下周三");
+
+            // start 日期下限（掩码命中但在起始日之前 → 不发生）
+            Check(!RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 6)), "mask 命中周三但早于起始日 = 不发生");
+            Check(!RepeatRule.OccursOn(mwf, new DateTime(2024, 3, 8)), "mask 命中周五但早于起始日 = 不发生");
+
+            // RepeatUntil 上限（含当天）
+            ScheduleItem bounded = mwf.Clone();
+            bounded.RepeatUntil = new DateTime(2024, 3, 15);
+            Check(RepeatRule.OccursOn(bounded, new DateTime(2024, 3, 15)), "RepeatUntil 当天仍命中");
+            Check(RepeatRule.OccursOn(bounded, new DateTime(2024, 3, 13)), "RepeatUntil 窗口内命中");
+            Check(!RepeatRule.OccursOn(bounded, new DateTime(2024, 3, 18)), "RepeatUntil 之后不命中（下周一）");
+
+            // mask = 0 时与旧 Weekly 完全等价
+            ScheduleItem legacyWeekly = NewWeekly("旧周复", new DateTime(2024, 3, 11), 0);
+            int mismatch = 0;
+            DateTime cursor = new DateTime(2024, 3, 1);
+            for (int i = 0; i < 90; i++)
+            {
+                DateTime day = cursor.AddDays(i);
+                bool oldBehavior = day.Date >= legacyWeekly.Date.Date && day.DayOfWeek == legacyWeekly.Date.DayOfWeek;
+                if (RepeatRule.OccursOn(legacyWeekly, day) != oldBehavior)
+                {
+                    mismatch++;
+                }
+            }
+            Eq(0, mismatch, "WeekDays=0 时 90 天逐日与旧 Weekly 行为逐点一致");
+            Eq("每周一", RepeatRule.Describe(legacyWeekly), "WeekDays=0 时 Describe 仍为 每周一");
+
+            // 全选 127 = 从起始日起每天
+            ScheduleItem everyday = NewWeekly("全选 127", new DateTime(2024, 3, 11), 127);
+            int missing = 0;
+            for (int i = 0; i < 30; i++)
+            {
+                if (!RepeatRule.OccursOn(everyday, new DateTime(2024, 3, 11).AddDays(i)))
+                {
+                    missing++;
+                }
+            }
+            Eq(0, missing, "mask=127 时从起始日起 30 天每天都命中");
+
+            // 单日 mask 的 NextOccurrence 跳到下一周同一天
+            ScheduleItem onlyWed = NewWeekly("只周三 09:00", new DateTime(2024, 3, 11), RepeatRule.MaskOf(DayOfWeek.Wednesday));
+            Eq(new DateTime(2024, 3, 13, 9, 0, 0),
+                RepeatRule.NextOccurrence(onlyWed, new DateTime(2024, 3, 11, 9, 0, 0)),
+                "单日 mask：周一起始之后 = 本周三");
+            Eq(new DateTime(2024, 3, 20, 9, 0, 0),
+                RepeatRule.NextOccurrence(onlyWed, new DateTime(2024, 3, 13, 9, 0, 0)),
+                "单日 mask：本周三之后 = 下一周同一天");
+            ScheduleItem onlyWedBounded = onlyWed.Clone();
+            onlyWedBounded.RepeatUntil = new DateTime(2024, 3, 13);
+            Eq(null,
+                RepeatRule.NextOccurrence(onlyWedBounded, new DateTime(2024, 3, 13, 9, 0, 0)),
+                "单日 mask 受 RepeatUntil 约束：本周三之后无下一个 = null");
+
+            // 多日 mask 的 NextOccurrence 取最近一次
+            Eq(new DateTime(2024, 3, 13, 9, 0, 0),
+                RepeatRule.NextOccurrence(mwf, new DateTime(2024, 3, 11, 9, 0, 0)),
+                "NextOccurrence mask：周一之后 = 周三");
+            Eq(new DateTime(2024, 3, 15, 9, 0, 0),
+                RepeatRule.NextOccurrence(mwf, new DateTime(2024, 3, 13, 9, 0, 0)),
+                "NextOccurrence mask：周三之后 = 周五");
+            Eq(new DateTime(2024, 3, 18, 9, 0, 0),
+                RepeatRule.NextOccurrence(mwf, new DateTime(2024, 3, 15, 9, 0, 0)),
+                "NextOccurrence mask：周五之后 = 下周一（跨周跳跃）");
+
+            // OccurrencesBetween 跨周跳跃
+            List<DateTime> week1 = new List<DateTime>(
+                RepeatRule.OccurrencesBetween(mwf, new DateTime(2024, 3, 11), new DateTime(2024, 3, 17)));
+            Eq(3, week1.Count, "OccurrencesBetween mask 一周 = 3 个端点");
+            Eq(new DateTime(2024, 3, 11, 9, 0, 0), week1[0], "OccurrencesBetween mask 第 1 个 = 周一");
+            Eq(new DateTime(2024, 3, 15, 9, 0, 0), week1[2], "OccurrencesBetween mask 第 3 个 = 周五");
+
+            // Describe
+            Eq("每周一、三、五", RepeatRule.Describe(mwf), "Describe mask = 每周一、三、五");
+            Eq("每周一、三、五（至 2024-03-15）", RepeatRule.Describe(bounded), "Describe mask 带 RepeatUntil");
+
+            // Clone / Normalize 夹紧
+            Eq(MonWedFri, mwf.Clone().WeekDays, "Clone 复制 WeekDays");
+            ScheduleItem clampedHigh = NewWeekly("夹紧上限", new DateTime(2024, 3, 11), 200);
+            clampedHigh.Normalize();
+            Eq(127, clampedHigh.WeekDays, "Normalize 把 WeekDays=200 夹到 127");
+            ScheduleItem clampedLow = NewWeekly("夹紧下限", new DateTime(2024, 3, 11), -5);
+            clampedLow.Normalize();
+            Eq(0, clampedLow.WeekDays, "Normalize 把 WeekDays=-5 夹到 0");
+
+            // 其它 RepeatKind 忽略 WeekDays
+            ScheduleItem dailyIgnored = NewItem("每天但带掩码", new DateTime(2024, 3, 11), 9, 0, RepeatKind.Daily);
+            dailyIgnored.WeekDays = RepeatRule.MaskOf(DayOfWeek.Monday);
+            Check(RepeatRule.OccursOn(dailyIgnored, new DateTime(2024, 3, 12)),
+                "Daily 忽略 WeekDays（周二也命中）");
+            ScheduleItem noneIgnored = NewItem("单次带掩码", new DateTime(2024, 3, 11), 9, 0, RepeatKind.None);
+            noneIgnored.WeekDays = 127;
+            Check(!RepeatRule.OccursOn(noneIgnored, new DateTime(2024, 3, 12)),
+                "单次忽略 WeekDays（次日不命中）");
+            ScheduleItem monthlyIgnored = NewItem("每月 11 日带掩码", new DateTime(2024, 3, 11), 9, 0, RepeatKind.Monthly);
+            monthlyIgnored.WeekDays = RepeatRule.MaskOf(DayOfWeek.Wednesday);
+            Check(RepeatRule.OccursOn(monthlyIgnored, new DateTime(2024, 4, 11)),
+                "Monthly 忽略 WeekDays（4/11 周四仍命中）");
+            Check(!RepeatRule.OccursOn(monthlyIgnored, new DateTime(2024, 4, 10)),
+                "Monthly 忽略 WeekDays（4/10 周三不因掩码命中）");
+
+            // JSON 往返
+            string dir = NewTempDir("dc-selftest-weekdays-");
+            try
+            {
+                Store store = new Store(dir);
+                ScheduleItem saved = NewWeekly("一三五保存", new DateTime(2024, 3, 11), MonWedFri);
+                saved.Id = "wd-id";
+                store.Add(saved);
+                string text = File.ReadAllText(store.DataFilePath, Encoding.UTF8);
+                Check(text.IndexOf("\"WeekDays\"", StringComparison.Ordinal) >= 0, "data.json 写出 WeekDays 键");
+                Store reloaded = new Store(dir);
+                reloaded.LoadStrict();
+                Eq(MonWedFri, reloaded.Find("wd-id").WeekDays, "往返 WeekDays = 21");
+                Check(RepeatRule.OccursOn(reloaded.Find("wd-id"), new DateTime(2024, 3, 13)),
+                    "往返后仍命中周三");
+                Check(!RepeatRule.OccursOn(reloaded.Find("wd-id"), new DateTime(2024, 3, 12)),
+                    "往返后仍不命中周二");
+
+                // 旧数据（无 WeekDays 键）：字段得 0，行为与改动前一致
+                string legacyJson = "{\n" +
+                    "  \"version\": 1,\n" +
+                    "  \"savedAt\": \"2024-03-01T00:00:00\",\n" +
+                    "  \"items\": [\n" +
+                    "    {\n" +
+                    "      \"Id\": \"legacy-weekly\",\n" +
+                    "      \"Title\": \"旧数据周一\",\n" +
+                    "      \"Notes\": \"\",\n" +
+                    "      \"Date\": \"2024-03-11T00:00:00\",\n" +
+                    "      \"Hour\": 9,\n" +
+                    "      \"Minute\": 0,\n" +
+                    "      \"Repeat\": 2,\n" +
+                    "      \"RepeatUntil\": null,\n" +
+                    "      \"Enabled\": true,\n" +
+                    "      \"Color\": \"#4F7CFF\",\n" +
+                    "      \"CreatedAt\": \"2024-03-01T00:00:00\",\n" +
+                    "      \"LastFiredAt\": null,\n" +
+                    "      \"SnoozeUntil\": null,\n" +
+                    "      \"DoneOccurrence\": null\n" +
+                    "    }\n" +
+                    "  ]\n" +
+                    "}";
+                string legacyDir = NewTempDir("dc-selftest-legacy-");
+                try
+                {
+                    File.WriteAllText(Path.Combine(legacyDir, "data.json"), legacyJson, new UTF8Encoding(false));
+                    Store legacy = new Store(legacyDir);
+                    legacy.LoadStrict();
+                    Eq(1, legacy.Items.Count, "旧 data.json（无 WeekDays 键）读入 1 条");
+                    ScheduleItem old = legacy.Find("legacy-weekly");
+                    Check(old != null, "旧数据按 Id 找到条目");
+                    Eq(0, old.WeekDays, "旧数据缺 WeekDays 键 → WeekDays = 0");
+                    Eq(RepeatKind.Weekly, old.Repeat, "旧数据 Repeat = Weekly");
+                    Check(RepeatRule.OccursOn(old, new DateTime(2024, 3, 11)), "旧数据 2024-03-11（周一）发生");
+                    Check(RepeatRule.OccursOn(old, new DateTime(2024, 3, 18)), "旧数据 2024-03-18（下周一）发生");
+                    Check(!RepeatRule.OccursOn(old, new DateTime(2024, 3, 12)), "旧数据 2024-03-12（周二）不发生");
+                    Eq("每周一", RepeatRule.Describe(old), "旧数据 Describe 仍为 每周一");
+                }
+                finally
+                {
+                    TryDeleteDir(legacyDir);
+                }
+            }
+            finally
+            {
+                TryDeleteDir(dir);
+            }
         }
 
         // ---------------- 2. Json ----------------

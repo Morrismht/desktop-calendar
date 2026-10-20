@@ -5,7 +5,8 @@ namespace DesktopCalendar.Models
 {
     /// <summary>
     /// 重复规则，纯函数，无状态、无 IO。
-    /// Daily = Date 起每天；Weekly = 与 Date 同星期；Monthly = 每月同"日"，该月无此日时取当月最后一天。
+    /// Daily = Date 起每天；Weekly = 与 Date 同星期（WeekDays 非 0 时改为命中掩码中任一天）；
+    /// Monthly = 每月同"日"，该月无此日时取当月最后一天。
     /// RepeatUntil 含当天，超出则不再发生。
     /// </summary>
     public static class RepeatRule
@@ -14,6 +15,43 @@ namespace DesktopCalendar.Models
 
         // NextOccurrence 的扫描上限：约 11 年，足够覆盖任何真实用途，同时保证不会死循环。
         private const int MaxScanDays = 4000;
+
+        /// <summary>周一=0 … 周日=6 的序号（与 WeekNames 一..日 的展示顺序一致）。</summary>
+        public static int DayIndex(DayOfWeek dow)
+        {
+            return ((int)dow + 6) % 7;
+        }
+
+        /// <summary>单个星期对应的位。</summary>
+        public static int MaskOf(DayOfWeek dow)
+        {
+            return 1 << DayIndex(dow);
+        }
+
+        /// <summary>mask 是否包含该星期。</summary>
+        public static bool MaskHas(int mask, DayOfWeek dow)
+        {
+            return (mask & MaskOf(dow)) != 0;
+        }
+
+        /// <summary>"一、三、五" 风格；mask==0 返回 ""；全选返回 "一、二、三、四、五、六、日"。</summary>
+        public static string MaskText(int mask)
+        {
+            string text = "";
+            for (int i = 0; i < 7; i++)
+            {
+                if ((mask & (1 << i)) == 0)
+                {
+                    continue;
+                }
+                if (text.Length > 0)
+                {
+                    text = text + "、";
+                }
+                text = text + WeekNames[(i + 1) % 7];
+            }
+            return text;
+        }
 
         /// <summary>day 只看 .Date。</summary>
         public static bool OccursOn(ScheduleItem it, DateTime day)
@@ -39,7 +77,11 @@ namespace DesktopCalendar.Models
                 case RepeatKind.Daily:
                     return true;
                 case RepeatKind.Weekly:
-                    return d.DayOfWeek == start.DayOfWeek;
+                    if (it.WeekDays == 0)
+                    {
+                        return d.DayOfWeek == start.DayOfWeek;
+                    }
+                    return MaskHas(it.WeekDays, d.DayOfWeek);
                 case RepeatKind.Monthly:
                     int last = DateTime.DaysInMonth(d.Year, d.Month);
                     int target = start.Day;
@@ -161,7 +203,14 @@ namespace DesktopCalendar.Models
                     text = "每天";
                     break;
                 case RepeatKind.Weekly:
-                    text = "每周" + WeekNames[(int)it.Date.DayOfWeek];
+                    if (it.WeekDays == 0)
+                    {
+                        text = "每周" + WeekNames[(int)it.Date.DayOfWeek];
+                    }
+                    else
+                    {
+                        text = "每周" + MaskText(it.WeekDays);
+                    }
                     break;
                 case RepeatKind.Monthly:
                     text = string.Format("每月 {0} 日", it.Date.Day);

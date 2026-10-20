@@ -41,7 +41,7 @@ namespace DesktopCalendar.UI
             DateTime t = DateTime.Today;
             _month = new DateTime(t.Year, t.Month, 1);
             _selected = t.Date;
-            this.BackColor = Theme.Current.Bg;
+            this.BackColor = Theme.Current.Card;
             Theme.Changed += HandleThemeChanged;
         }
 
@@ -101,7 +101,7 @@ namespace DesktopCalendar.UI
 
         private void HandleThemeChanged(object sender, EventArgs e)
         {
-            this.BackColor = Theme.Current.Bg;
+            this.BackColor = Theme.Current.Card;
             this.Invalidate();
         }
 
@@ -141,7 +141,8 @@ namespace DesktopCalendar.UI
             if (g == null) return;
             Theme th = Theme.Current;
             Draw.Smooth(g);
-            using (SolidBrush bg = new SolidBrush(th.Bg))
+            // 本控件不再画外框/外卡（外卡由主窗的 Draw.Card 提供），自身只铺卡片面
+            using (SolidBrush bg = new SolidBrush(th.Card))
             {
                 g.FillRectangle(bg, ClientRectangle);
             }
@@ -198,15 +199,17 @@ namespace DesktopCalendar.UI
         {
             Theme th = Theme.Current;
             int h = _header.Height;
+            if (h <= 0 || _header.Width <= 0) return;
+
+            // 星期行 = 一条 HeaderBand 圆角色带承载「一…日」（左右各内缩 0），取代原来的发丝分隔线
+            Draw.Block(g, _header, Draw.Scale(g, 8), th.HeaderBand);
+
             for (int c = 0; c < WeekCount; c++)
             {
                 Rectangle r = new Rectangle(_cells[c].X, _header.Y, _cells[c].Width, h);
                 Color c2 = c >= 5 ? th.TextMuted : th.TextSecondary;
-                Draw.Text(g, WeekNames[c], th.Small, c2, r, StringAlignment.Center, StringAlignment.Center);
+                Draw.Text(g, WeekNames[c], th.SmallBold, c2, r, StringAlignment.Center, StringAlignment.Center);
             }
-
-            float lineY = _header.Bottom + Draw.Scale(g, 2) + 0.5f;
-            Draw.Line(g, _header.X, lineY, _header.Right, lineY, Draw.Blend(th.Border, th.Bg, 0.35f), 1f);
         }
 
         private void DrawCells(Graphics g)
@@ -221,6 +224,7 @@ namespace DesktopCalendar.UI
             int barPadY = Draw.Scale(g, 3);
             int bottomPad = Draw.Scale(g, 4);
             int radius = Draw.Scale(g, 10);
+            int ringW = Math.Max(2, Draw.Scale(g, 2));      // 选中态 2px Accent 环
             DateTime today = DateTime.Today;
 
             for (int i = 0; i < TotalCells; i++)
@@ -234,28 +238,34 @@ namespace DesktopCalendar.UI
 
                 if (isSel)
                 {
-                    Draw.FillRound(g, box, radius, th.Surface);
-                    Draw.StrokeRound(g, box, radius, th.Accent, 1.5f);
+                    // 选中：Surface 面 + 2px Accent 环（两层色块叠出来，内层让开 2px，边缘比描边更干脆）
+                    if (box.Width > ringW * 2 && box.Height > ringW * 2)
+                    {
+                        Draw.Block(g, box, radius, th.Accent);
+                        Rectangle inner = new Rectangle(box.X + ringW, box.Y + ringW,
+                                                        box.Width - ringW * 2, box.Height - ringW * 2);
+                        Draw.Block(g, inner, Math.Max(0, radius - ringW), th.Surface);
+                    }
+                    else
+                    {
+                        Draw.Block(g, box, radius, th.Surface);
+                    }
                 }
                 else if (isToday)
                 {
-                    Draw.FillRound(g, box, radius, th.TodayBg);
-                    Draw.StrokeRound(g, box, radius, Draw.Blend(th.Accent, th.TodayBg, 0.72f), 1f);
+                    Draw.Block(g, box, radius, th.TodayBg);
                 }
-                else if (isHover)
+                else if (isHover && inMonth)
                 {
-                    Draw.FillRound(g, box, radius, th.SurfaceAlt);
-                    Draw.StrokeRound(g, box, radius, Draw.Blend(th.Border, th.SurfaceAlt, 0.45f), 1f);
+                    Draw.Block(g, box, radius, th.SurfaceAlt);
                 }
                 else if (inMonth)
                 {
-                    // 极淡的发丝边框：只给日期格一点结构，不抢内容注意力
-                    Draw.StrokeRound(g, box, radius, Draw.Blend(th.Border, th.Bg, 0.30f), 1f);
+                    Draw.Block(g, box, radius, th.CellBg);
                 }
                 else
                 {
-                    // 非本月格保留更淡的轮廓，让整张网格不缺角
-                    Draw.StrokeRound(g, box, radius, Draw.Blend(th.Border, th.Bg, 0.68f), 1f);
+                    Draw.Block(g, box, radius, th.CellBgFaint);
                 }
 
                 Rectangle numRect = new Rectangle(box.X + padIn, box.Y + numTop, box.Width - padIn * 2, numH);
@@ -280,7 +290,7 @@ namespace DesktopCalendar.UI
                 {
                     ScheduleItem it = items[k];
                     Color c = th.ResolveCategory(it.Color);
-                    if (!inMonth) c = Draw.Blend(c, th.Bg, 0.55f);
+                    if (!inMonth) c = Draw.Blend(c, th.CellBgFaint, 0.55f);
 
                     int barH = rowH - barPadY * 2;
                     if (barH < 3) barH = 3;
