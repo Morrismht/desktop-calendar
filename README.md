@@ -49,21 +49,30 @@
 
 ## 截图
 
-浅色月历：
+真实的运行窗口（浅色）：
 
-![浅色主题 · 月历](preview/month-light.png)
+![浅色主题 · 运行中的主窗口](preview/app-running.png)
 
-暗色月历：
+真实的运行窗口（暗色，点状态条上的「深色模式」切换）：
 
-![暗色主题 · 月历](preview/month-dark.png)
+![暗色主题 · 运行中的主窗口](preview/app-running-dark.png)
 
-到点提醒卡片：
+到点真的会弹出来（下面这张是种子数据到点后截的实拍，不是设计稿）：
 
-![提醒卡片](preview/reminder-light.png)
+![到点弹出的提醒卡片](preview/app-reminder-live.png)
 
 新建 / 编辑日程：
 
 ![日程编辑](preview/editor-light.png)
+
+单独渲染的月历与提醒卡片（像素自检用，明 / 暗两套）：
+
+![浅色月历](preview/month-light.png)
+
+![暗色月历](preview/month-dark.png)
+
+![提醒卡片 · 浅色](preview/reminder-light.png)
+
 
 ## 快速开始
 
