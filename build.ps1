@@ -35,6 +35,7 @@ $sources = @(
     (Join-Path $root 'src\Data\TipStore.cs'),
     (Join-Path $root 'src\Services\Scheduler.cs'),
     (Join-Path $root 'src\Services\AutoStart.cs'),
+    (Join-Path $root 'src\Services\DiagnosticLog.cs'),
     (Join-Path $root 'src\UI\Theme.cs'),
     (Join-Path $root 'src\UI\Draw.cs'),
     (Join-Path $root 'src\UI\Branding.cs'),

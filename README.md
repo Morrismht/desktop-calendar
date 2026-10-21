@@ -103,6 +103,16 @@
 
 产物是 `build\desktop-calendar.exe`。构建细节见下文「从源码构建」。
 
+### 方式三：一键安装（推荐，顺手建好快捷方式）
+
+仓库里的 `install.ps1` 会把 exe 装到当前用户目录、建好桌面和开始菜单快捷方式，并顺手清掉误放在桌面的裸 exe：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+安装位置是 `%LOCALAPPDATA%\Programs\DesktopCalendar\`（不需要管理员权限，卸载就是删掉这个目录加两个快捷方式）。装到固定位置的好处是：自启动、快捷方式、托盘图标全都指向同一个 exe，不会出现「桌面放了一个、D 盘又放了一个、自启指向第三个」的混乱——之前找不到托盘图标、自启报拒绝访问，大半都是这种多副本导致的。
+
 ## 使用说明
 
 1. **新建日程** —— 在左侧点选日期，再点右侧 `+ 新建日程`；或者直接**双击**日历里的某一天。填标题、时间，需要重复就选「每天 / 每周 / 每月」，可选填「重复至某日」；挑一个分类颜色方便区分；备注随意。保存即生效。
@@ -110,8 +120,9 @@
 3. **重复规则** —— 单次只是那一天；每天从起始日期开始天天提醒；每周按起始日期所在的星期几；每月按起始日期的「日」。勾了「重复至某日」就在该日（含当天）之后不再提醒。
 4. **完成 / 稍后 / 今天忽略** —— 提醒卡片的三个按钮：`完成` 记为本次已完成（重复日程只完成这一次，不影响下一次）；`+10 分钟` 十分钟后再提醒一次；`今天忽略` 当天不再提醒这条，明天照常。
 5. **明暗切换** —— 底部状态条的明暗按钮切换主题，即时生效，下次启动沿用你的选择。
-6. **最小化到托盘** —— 点关闭 `×` 或最小化按钮，窗口收进托盘，日程提醒照常跑。要回来就双击托盘图标，或右键托盘图标选「打开日历」。
+6. **最小化到托盘** —— 点关闭 `×` 或最小化按钮，窗口收进托盘，日程提醒照常跑。要回来就双击托盘图标，或右键托盘图标选「打开日历」。第一次收起时会弹一次气泡提示，告诉你图标去哪了。
 7. **退出程序** —— 右键托盘图标 → `退出`。只关窗口是退不掉的，这是故意的。
+8. **托盘挂不上时不会消失** —— 如果这台机器上托盘图标注册不成功（被杀软拦截、explorer 异常、远程会话里等），程序不会把窗口藏起来让你以为它关了，而是**退回成普通最小化留在任务栏**，同时写一条诊断日志。这样至少你能从任务栏把窗口点回来、从菜单里退出。
 
 ## 数据与隐私
 
@@ -122,17 +133,21 @@
 
 ## 开机自启原理
 
-开机自启不是装服务，也不写计划任务，就是用 Windows 官方的当前用户启动项：
+开机自启不装服务，用的是 Windows 官方的当前用户启动方式，**三级依次兜底**，前一级被拒就自动换下一级：
 
-- 注册表位置：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-- 值名：`DesktopCalendar`
-- 值内容：`"<exe 完整路径>" --silent`
+| 顺序 | 机制 | 位置 | 说明 |
+| --- | --- | --- | --- |
+| 1 | 注册表启动项 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下值名 `DesktopCalendar` | 最轻量，绝大多数机器走这条 |
+| 2 | 启动文件夹快捷方式 | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\DesktopCalendar.lnk` | 个别机器注入了 ObjectName 保护、或组策略禁写 Run 项时用这条 |
+| 3 | 计划任务 | `schtasks /Create /TN DesktopCalendar /SC ONLOGON`（当前用户，无最高权限） | 前两条都被杀软/策略挡住时的最后一招 |
 
-启动命令行**以 ` --silent` 结尾**就表示静默启动：进程起来、托盘图标在、提醒照常走，但主窗口不弹出来打扰你。
+不管哪一级，登记的启动命令行都以 ` --silent` 结尾，表示静默启动：进程起来、托盘图标在、提醒照常走，但主窗口不弹出来。
 
-- 只写 `HKCU`（当前用户），因此**不需要管理员权限**，也不影响这台机器上的其他账号
+- 全部机制都只作用于**当前用户**，因此不需要管理员权限，也不影响这台机器上的其他账号
 - 程序内可以随时开关：底部状态条的自启开关，或托盘菜单里的「开机自启」勾选项
-- 想手动确认是否生效，可以打开「任务管理器 → 启动」看 `DesktopCalendar` 这一项
+- 想手动确认是否生效：任务管理器 → 启动 里看 `DesktopCalendar`；或看「设置 → 应用 → 启动」
+- 开关会**一级一级试**：成功的那一级会记下来，关的时候把三级里存在的都清掉，不会留下半开半关的状态
+- 三级都失败时不会静默失败：状态条会给出具体原因（比如「注册表被拒：UnauthorizedAccessException」），完整堆栈写进诊断日志
 
 ## 从源码构建
 
@@ -176,16 +191,18 @@ desktop-calendar/
 ├─ src/
 │  ├─ Models/        Schedule.cs（日程实体）、RepeatRule.cs（重复规则判定）
 │  ├─ Data/          Json.cs（手写 JSON 读写）、Store.cs（数据存取 + 原子写）
-│  ├─ Services/      Scheduler.cs（30 秒轮询 / 提醒状态机）、AutoStart.cs（自启注册表）
+│  ├─ Services/      Scheduler.cs（30 秒轮询 / 提醒状态机）、AutoStart.cs（三级自启兜底）、
+│  │                 DiagnosticLog.cs（诊断日志，%APPDATA% 不可写时退到 exe 同级）
 │  ├─ UI/            Theme.cs、Draw.cs、Chrome.cs（主题 / 绘制 / 窗口外壳）
 │  │                 MonthView.cs、MainForm.cs、ReminderCard.cs、
-│  │                 EventEditor.cs、TrayController.cs、Branding.cs（品牌标记）
+│  │                 EventEditor.cs、TipEditor.cs、TrayController.cs、Branding.cs（品牌标记）
 │  └─ Program.cs     入口：单实例 Mutex、--silent、DPI 感知
 ├─ assets/           app.ico（多尺寸内嵌图标）、logo-256.png、make_icon.py
-├─ tests/            逻辑自检与预览截图生成（不参与 exe 构建）
+├─ tests/            五套自检（逻辑/提示/托盘×2/自启）+ run_all_tests.ps1（不参与 exe 构建）
 ├─ preview/          README 用的界面截图
 ├─ docs/使用说明.md    面向使用者的完整说明书
 ├─ build.ps1         一键构建脚本
+├─ install.ps1       一键安装（装到 %LOCALAPPDATA%，建快捷方式）
 ├─ CONTRACT.md       产品定义与硬约束
 └─ CONTRACT-V2.md    第二轮视觉规范补丁
 ```
@@ -222,7 +239,17 @@ Unblock-File -Path "$env:USERPROFILE\Downloads\desktop-calendar.exe"
 
 Win11 默认把新图标收进「隐藏的图标」里。点任务栏右下角的 `^` 展开就能看到；想让它常驻，把它拖到任务栏上，或在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」里打开。
 
-这是 Windows 的托盘收纳策略，程序无法替你改。程序这边已经做到：图标用 exe 内嵌的 32×32 原图、第一次收起时弹一次气泡指路（点 `×` 还是 `—` 都算）、explorer 重启后自动挂回去。如果照上面做完还是没有，右键任务栏 → 任务管理器，看 `desktop-calendar.exe` 是否还在跑（不在就是被杀了/没启动）。
+这是 Windows 的托盘收纳策略，程序无法替你改。程序这边已经做到：图标用 exe 内嵌的 32×32 原图、第一次收起时弹一次气泡指路（点 `×` 还是 `—` 都算）、explorer 重启后自动挂回去；万一注册真的失败，会退成任务栏最小化而不是消失（见「使用说明」第 8 条）。如果照上面做完还是没有，按这个顺序查：
+
+1. 任务管理器里看 `desktop-calendar.exe` 还在不在——不在就是被杀了或压根没启动
+2. 看诊断日志（见下一条）里的 `tray:` 行，会写明注册成功与否、失败的错误码、explorer 的 pid
+3. 确认你点的是同一个 exe：桌面上残留的旧 exe 和安装目录里的新 exe 是两个不同路径，托盘设置按路径记
+
+**程序到底把什么东西写到了哪里？出问题要看哪个日志？**
+
+- 数据：`%APPDATA%\DesktopCalendar\data.json`（自定提示在同目录 `tips.json`）
+- 诊断日志：`%APPDATA%\DesktopCalendar\diagnostics.log`，记录启动、托盘注册、自启动开关的每一步结果和错误码；超过 256 KB 自动轮转成 `.old`
+- 如果 `%APPDATA%` 本身不可写（极少见，通常是安全软件整目录保护），数据会退到 exe 同级的 `data\` 子目录，日志同理，程序会在状态条上说明
 
 **每月 31 号的日程，2 月怎么提醒？**
 

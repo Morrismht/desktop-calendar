@@ -25,10 +25,15 @@ namespace DesktopCalendar.Data
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "DesktopCalendar");
             }
-            _dataDir = dataDir;
+            string requested = dataDir;
+            _dataDir = EnsureWritableDir(requested);
+            DataDirFallback = !string.Equals(_dataDir, requested, StringComparison.OrdinalIgnoreCase);
             _dataFilePath = Path.Combine(_dataDir, "data.json");
             Load();
         }
+
+        /// <summary>true 表示首选目录不可写、已退到 exe 同级 data 目录（UI 可据此提示一次）。</summary>
+        public bool DataDirFallback { get; private set; }
 
         public string DataDir
         {
@@ -85,6 +90,55 @@ namespace DesktopCalendar.Data
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "DesktopCalendar");
+        }
+
+        /// <summary>
+        /// 确认目录可写：能建目录并落一个探针文件就用它；否则退到 exe 同级的 data 目录。
+        /// 用户机器上若 %APPDATA% 被安全软件/策略拒绝，程序仍能存下日程，而不是静默丢数据。
+        /// </summary>
+        private static string EnsureWritableDir(string preferred)
+        {
+            if (CanWriteDir(preferred))
+            {
+                return preferred;
+            }
+            string fallback = null;
+            try
+            {
+                string exeDir = Path.GetDirectoryName(typeof(Store).Assembly.Location);
+                if (!string.IsNullOrEmpty(exeDir))
+                {
+                    fallback = Path.Combine(exeDir, "data");
+                }
+            }
+            catch (Exception)
+            {
+                fallback = null;
+            }
+            if (fallback != null && !fallback.Equals(preferred, StringComparison.OrdinalIgnoreCase) && CanWriteDir(fallback))
+            {
+                return fallback;
+            }
+            return preferred;
+        }
+
+        private static bool CanWriteDir(string dir)
+        {
+            try
+            {
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                string probe = Path.Combine(dir, ".write-probe");
+                File.WriteAllText(probe, "1", Encoding.UTF8);
+                File.Delete(probe);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>扫描 --datadir / --datadir=；多个时后者生效；值形如 --xxx 视为缺值。</summary>

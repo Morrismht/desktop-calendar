@@ -531,15 +531,27 @@ namespace DesktopCalendar.UI
 
             if (!ok)
             {
-                MessageBox.Show(string.IsNullOrEmpty(error) ? "无法修改开机自启设置。" : error,
-                    "开机自启", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                // 失败：把 AutoStart 拼好的逐机制原因原样展示（含机制名 + 异常类型/退出码 + 路径），可换行。
+                string full = string.IsNullOrEmpty(error) ? "无法修改开机自启设置。" : error;
+                DiagnosticLog.Write("MainForm.ToggleAutoStart " + (wasOn ? "关闭" : "开启") + "失败："
+                    + full.Replace("\r\n", " / ").Replace("\n", " / "));
+                MessageBox.Show(full, "开机自启", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
-            else if (AutoStart.IsEnabled && AutoStart.ActiveMechanism == "startup")
+            else if (!wasOn)
             {
-                string extra = string.IsNullOrEmpty(error) ? "" : "\r\n\r\n" + error;
-                MessageBox.Show("已开启开机自启，但注册表写入被拒绝，已改用启动文件夹方式。"
-                    + "\r\n\r\n生效方式：登录 Windows 后以 --silent 静默启动到托盘。" + extra,
-                    "开机自启", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // 成功且是「开启」动作：只有降级到 startup / task 时才弹一次说明，进度条式提示不重复弹。
+                string mech = AutoStart.ActiveMechanism;
+                if (mech == AutoStart.MechanismStartup || mech == AutoStart.MechanismTask)
+                {
+                    string how = mech == AutoStart.MechanismStartup
+                        ? "启动文件夹（DesktopCalendar.cmd）"
+                        : "登录计划任务（DesktopCalendar，ONLOGON / RL LIMITED）";
+                    string reason = string.IsNullOrEmpty(error) ? "（未记录到原因）" : error;
+                    MessageBox.Show("已用 " + how + " 方式实现开机自启。"
+                        + "\r\n\r\n生效方式：登录 Windows 后以 --silent 静默启动到托盘。"
+                        + "\r\n\r\n原因：" + reason,
+                        "开机自启", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
             Invalidate();
         }
@@ -549,9 +561,34 @@ namespace DesktopCalendar.UI
             Theme.Toggle();
         }
 
+        /// <summary>托盘注册成功才允许隐藏主窗口；失败时必须留在任务栏上。</summary>
+        internal static bool ShouldHideOnMinimize(bool registrationOk)
+        {
+            return registrationOk;
+        }
+
         private void MinimizeToTray()
         {
-            Hide();
+            TrayController tray = TrayController.Current;
+            bool registrationOk = true;
+            if (tray != null) registrationOk = tray.TryAdd();
+
+            if (ShouldHideOnMinimize(registrationOk))
+            {
+                Hide();
+                return;
+            }
+
+            // 托盘里没图标：绝不能 Hide()，否则用户以为程序被关掉了
+            WindowState = FormWindowState.Minimized;
+            ShowInTaskbar = true;
+            try
+            {
+                DesktopCalendar.Services.DiagnosticLog.Write("ui: MinimizeToTray 兜底 → 最小化到任务栏 "
+                    + (tray == null ? "tray=null" : tray.DiagnosticLine()));
+            }
+            catch (Exception) { }
+            if (tray != null) tray.NoticeFallbackToTaskbar();
         }
 
         // ---------------------------------------------------------------- 提醒卡片
@@ -950,8 +987,58 @@ namespace DesktopCalendar.UI
 
             DrawPill(g, _rAutoStart, auto ? "开机自启 · 开" : "开机自启 · 关",
                      _hover == HIT_AUTOSTART, auto, t);
+            UpdateAutoStartTip();
             DrawPill(g, _rTheme, Theme.IsDark ? "浅色模式" : "深色模式", _hover == HIT_THEME, false, t);
             DrawPill(g, _rTray, "最小化到托盘", _hover == HIT_TRAY, false, t);
+        }
+
+        // 「开机自启」胶囊的悬浮提示：只取 AutoStart.DescribeState() 的前两行，用 ToolTip 气泡，不新开窗口。
+        private ToolTip _autoTip;
+        private string _autoTipShown;
+
+        private void UpdateAutoStartTip()
+        {
+            try
+            {
+                if (_hover != HIT_AUTOSTART || !IsHandleCreated || !Visible)
+                {
+                    _autoTipShown = null;
+                    return;
+                }
+                string state;
+                try
+                {
+                    state = AutoStart.DescribeState();
+                }
+                catch (Exception)
+                {
+                    return;
+                }
+                if (string.IsNullOrEmpty(state))
+                {
+                    return;
+                }
+                string[] lines = state.Replace("\r\n", "\n").Split('\n');
+                string tip = lines.Length > 0 ? lines[0].Trim() : "";
+                if (lines.Length > 1 && lines[1].Trim().Length > 0)
+                {
+                    tip = tip + "\r\n" + lines[1].Trim();
+                }
+                if (tip.Length == 0 || tip == _autoTipShown)
+                {
+                    return;
+                }
+                if (_autoTip == null)
+                {
+                    _autoTip = new ToolTip();
+                    _autoTip.ShowAlways = true;
+                }
+                _autoTip.Show(tip, this, _rAutoStart.Left, _rAutoStart.Bottom + 4, 8000);
+                _autoTipShown = tip;
+            }
+            catch (Exception)
+            {
+            }
         }
 
         // ---------------------------------------------------------------- 命中

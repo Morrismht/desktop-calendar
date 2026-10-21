@@ -1,8 +1,11 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using DesktopCalendar.Data;
 using DesktopCalendar.Services;
@@ -10,14 +13,96 @@ using DesktopCalendar.Services;
 namespace DesktopCalendar.UI
 {
     /// <summary>
-    /// 托盘图标 + 右键菜单。
-    /// 图标优先直接用 Branding.AppIcon（由 exe 自带 ico 派生的 32×32 独立图标、进程级单例）；
-    /// 只有它取不到时才回落到自绘，自绘路径的 HICON 由本对象持有到 Dispose 时才销毁。
-    /// 另外监听 TaskbarCreated：explorer 重启后自己把图标重新加回托盘。
+    /// 托盘图标 + 右键菜单（v3：自己拥有 Shell_NotifyIcon，失败可观测）。
+    ///
+    /// 关键变化：不再相信 NotifyIcon.Visible 的静默失败。
+    /// 1) 构造后先问壳层「这个槽位的图标真的在托盘里吗」——Shell_NotifyIconGetRect，
+    ///    只有它说在，才算注册成功（RegistrationOk = true）。
+    /// 2) 不在时自己 NIM_ADD 一个（guidItem + uID=1 + 自建隐藏窗口做回调），
+    ///    每次调用都检查返回值与 GetLastWin32Error，并写诊断日志。
+    /// 3) 自注册成功后回调消息进自建窗口：左键显示主窗口，右键在光标处弹菜单。
+    /// 4) TaskbarCreated：explorer 重启后重新注册并复核。
+    /// 5) 气泡走 NIF_INFO；tooltip 走 NIF_TIP。
+    ///
+    /// 图标来源仍然是 Branding.AppIcon（取不到才自绘；自绘的 HICON 由本对象持有到 Dispose）。
     /// </summary>
     public class TrayController : IDisposable
     {
+        // tooltip 截断上限：szTip 容量 128（含结尾 0），历史行为是 63，保持不变
         private const int TOOLTIP_MAX = 63;
+        private const int INFO_MAX = 255;
+        private const int INFO_TITLE_MAX = 63;
+
+        private const int NIM_ADD = 0x00000000;
+        private const int NIM_MODIFY = 0x00000001;
+        private const int NIM_DELETE = 0x00000002;
+        private const int NIM_SETVERSION = 0x00000004;
+
+        private const int NIF_MESSAGE = 0x00000001;
+        private const int NIF_ICON = 0x00000002;
+        private const int NIF_TIP = 0x00000004;
+        private const int NIF_INFO = 0x00000010;
+
+        private const int NIIF_INFO = 0x00000001;
+        private const int NOTIFYICON_VERSION_4 = 4;
+
+        private const int WM_LBUTTONUP = 0x0202;
+        private const int WM_LBUTTONDBLCLK = 0x0203;
+        private const int WM_RBUTTONUP = 0x0205;
+        private const int WM_CONTEXTMENU = 0x007B;
+
+        /// <summary>自注册图标的回调消息（送到自建隐藏窗口）。NOTIFYICON_VERSION_4 下 LOWORD(lParam) 是鼠标消息。</summary>
+        private const int WM_TRAYICON = 0x8000 + 500;
+
+        /// <summary>自注册图标的稳定标识。进程重启后同一 guid 复用同一个托盘槽位。</summary>
+        private static readonly Guid TrayGuid = new Guid("8f3c2a51-6d4b-4f0e-9a27-3c5d81b7e402");
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct NOTIFYICONDATAW
+        {
+            public int cbSize;
+            public IntPtr hWnd;
+            public int uID;
+            public int uFlags;
+            public int uCallbackMessage;
+            public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string szTip;
+            public int dwState;
+            public int dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string szInfo;
+            public int uVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+            public string szInfoTitle;
+            public int dwInfoFlags;
+            public Guid guidItem;
+            public IntPtr hBalloonIcon;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NOTIFYICONIDENTIFIER
+        {
+            public int cbSize;
+            public IntPtr hWnd;
+            public int uID;
+            public Guid guidItem;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool Shell_NotifyIcon(int message, ref NOTIFYICONDATAW data);
+
+        [DllImport("shell32.dll", SetLastError = false)]
+        private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out RECT location);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern bool DestroyIcon(IntPtr handle);
@@ -28,8 +113,126 @@ namespace DesktopCalendar.UI
         /// <summary>explorer 重建任务栏时广播的消息 id（0 表示注册失败）。</summary>
         internal static readonly int WmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
+        // ------------------------------------------------ 壳层通道（可注入：测试用假实现，不依赖真实托盘）
+
+        /// <summary>把 shell32 的调用全挡在这个接口后面。生产实现是 Win32TrayShell，测试可注入假实现。</summary>
+        internal interface ITrayShellChannel
+        {
+            bool AddIcon(IntPtr hwnd, int id, Guid guid, IntPtr hicon, string tip, int callbackMessage, out int errorCode);
+            bool SetVersion(IntPtr hwnd, int id, Guid guid, int version, out int errorCode);
+            bool SetTip(IntPtr hwnd, int id, Guid guid, string tip, out int errorCode);
+            bool ShowInfo(IntPtr hwnd, int id, Guid guid, string title, string body, int infoFlags, out int errorCode);
+            bool DeleteIcon(IntPtr hwnd, int id, Guid guid, out int errorCode);
+            bool IsPresent(IntPtr hwnd, int id, Guid guid);
+        }
+
+        private static ITrayShellChannel _shell = new Win32TrayShell();
+
+        /// <summary>当前壳层通道；测试把它替换成假实现即可在无托盘环境里跑完整流程。</summary>
+        internal static ITrayShellChannel Shell
+        {
+            get { return _shell; }
+            set
+            {
+                if (value == null) _shell = new Win32TrayShell();
+                else _shell = value;
+            }
+        }
+
+        /// <summary>真实 shell32 通道：每次都检查返回值，并把 Win32 错误码带回来（错误码 0 也可能是假成功）。</summary>
+        private sealed class Win32TrayShell : ITrayShellChannel
+        {
+            public bool AddIcon(IntPtr hwnd, int id, Guid guid, IntPtr hicon, string tip, int callbackMessage, out int errorCode)
+            {
+                NOTIFYICONDATAW d = BuildData(hwnd, id, guid, NIF_MESSAGE | NIF_ICON | NIF_TIP, hicon, tip, callbackMessage);
+                return Call(NIM_ADD, ref d, out errorCode);
+            }
+
+            public bool SetVersion(IntPtr hwnd, int id, Guid guid, int version, out int errorCode)
+            {
+                NOTIFYICONDATAW d = BuildData(hwnd, id, guid, 0, IntPtr.Zero, "", 0);
+                d.uVersion = version;
+                return Call(NIM_SETVERSION, ref d, out errorCode);
+            }
+
+            public bool SetTip(IntPtr hwnd, int id, Guid guid, string tip, out int errorCode)
+            {
+                NOTIFYICONDATAW d = BuildData(hwnd, id, guid, NIF_TIP, IntPtr.Zero, tip, 0);
+                return Call(NIM_MODIFY, ref d, out errorCode);
+            }
+
+            public bool ShowInfo(IntPtr hwnd, int id, Guid guid, string title, string body, int infoFlags, out int errorCode)
+            {
+                NOTIFYICONDATAW d = BuildData(hwnd, id, guid, NIF_INFO, IntPtr.Zero, "", 0);
+                d.szInfo = Truncate(body, INFO_MAX);
+                d.szInfoTitle = Truncate(title == null ? "桌面日历" : title, INFO_TITLE_MAX);
+                d.dwInfoFlags = infoFlags;
+                return Call(NIM_MODIFY, ref d, out errorCode);
+            }
+
+            public bool DeleteIcon(IntPtr hwnd, int id, Guid guid, out int errorCode)
+            {
+                NOTIFYICONDATAW d = BuildData(hwnd, id, guid, 0, IntPtr.Zero, "", 0);
+                return Call(NIM_DELETE, ref d, out errorCode);
+            }
+
+            public bool IsPresent(IntPtr hwnd, int id, Guid guid)
+            {
+                try
+                {
+                    NOTIFYICONIDENTIFIER q = new NOTIFYICONIDENTIFIER();
+                    q.cbSize = Marshal.SizeOf(typeof(NOTIFYICONIDENTIFIER));
+                    if (guid == Guid.Empty)
+                    {
+                        q.hWnd = hwnd;
+                        q.uID = id;
+                        q.guidItem = Guid.Empty;
+                    }
+                    else
+                    {
+                        q.hWnd = IntPtr.Zero;
+                        q.uID = 0;
+                        q.guidItem = guid;
+                    }
+                    RECT rc;
+                    int hr = Shell_NotifyIconGetRect(ref q, out rc);
+                    return hr == 0;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+
+            private static bool Call(int message, ref NOTIFYICONDATAW d, out int errorCode)
+            {
+                errorCode = 0;
+                try
+                {
+                    bool ok = Shell_NotifyIcon(message, ref d);
+                    if (!ok)
+                    {
+                        int err = Marshal.GetLastWin32Error();
+                        errorCode = err == 0 ? -1 : err;
+                    }
+                    return ok;
+                }
+                catch (Exception)
+                {
+                    errorCode = -2;
+                    return false;
+                }
+            }
+        }
+
         /// <summary>测试钩子：置 true 时跳过 Branding，强制走自绘图标分支。</summary>
         internal static bool ForceSelfDrawnIcon = false;
+
+        /// <summary>测试钩子：置 true 时不走 NotifyIcon 的登记，只用本类自己的 NIM_ADD 通道。</summary>
+        internal static bool ForceOwnIconRegistration = false;
+
+        /// <summary>当前的托盘控制器（MainForm 判断「注册失败就不要隐藏窗口」用）。</summary>
+        internal static TrayController Current;
 
         private readonly Store _store;
 
@@ -56,6 +259,32 @@ namespace DesktopCalendar.UI
 
         private string _tooltip = "桌面日历";
         private string _lastBalloon = "";
+
+        // ------------------------------------------------ 注册状态（本轮排障的核心）
+
+        /// <summary>none / notify（NotifyIcon 的槽位确实在托盘里）/ owned（本类自己 NIM_ADD 的槽位）。</summary>
+        private string _owner = "none";
+        private bool _registrationOk;
+        private int _addFailures;
+        private int _lastWin32Error;
+        private bool _versionSet;
+        private IntPtr _iconHwnd = IntPtr.Zero;
+        private int _iconId;
+        private Guid _iconGuid = Guid.Empty;
+        private int _shellAdds;
+        private int _shellModifies;
+        private int _shellDeletes;
+        private int _shellFailures;
+        private int _presenceChecks;
+        private string _lastFlow = "init";
+
+        private static bool _fallbackNoticeShown;
+        private static int _tryAddCalls;
+        private static int _noticeCount;
+        private static string _lastNoticeText = "";
+
+        /// <summary>测试注入点：非 null 时用它代替 MessageBox（测试里不能弹模态框）。</summary>
+        internal static Action<string> NoticeSink = null;
 
         public event Action ShowMainRequested;
         public event Action ExitRequested;
@@ -93,23 +322,84 @@ namespace DesktopCalendar.UI
 
             _menu.Opening += delegate { RefreshMenuState(); };
 
+            // 隐藏窗口必须先建：它是自注册图标的消息接收窗口
+            _msgWindow = CreateMessageWindow();
+
             _notify = new NotifyIcon();
             _notify.Icon = _appIcon;
             _notify.Text = _tooltip;
             _notify.ContextMenuStrip = _menu;
-            _notify.Visible = true;
+            if (!ForceOwnIconRegistration)
+            {
+                // 历史通道：NotifyIcon 自己登记一次（成不成功由下面的 RefreshRegistration 复核）
+                _notify.Visible = true;
+            }
             _notify.DoubleClick += delegate { RaiseShowMain(); };
             _notify.MouseDoubleClick += delegate { RaiseShowMain(); };
 
-            // 隐藏窗口只干一件事：接 TaskbarCreated，explorer 重启后把图标重新加回托盘
-            _msgWindow = CreateMessageWindow();
-
+            RefreshRegistration("ctor");
             RefreshMenuState();
+
+            Current = this;
+            DiagnosticLog.Write("tray: ctor " + DiagnosticLine());
         }
 
         // ---------------------------------------------------------------- 公开成员
 
         public NotifyIcon Icon { get { return _notify; } }
+
+        /// <summary>最近一次注册复核的结果：true 表示壳层里确实有这个图标（GetRect 确认过）。</summary>
+        public bool RegistrationOk { get { return _registrationOk; } }
+
+        /// <summary>NIM_ADD 的失败次数（成功时不会增长）。</summary>
+        public int AddFailures { get { return _addFailures; } }
+
+        /// <summary>最近一次壳层操作带回的 Win32 错误码（0 = 成功）。</summary>
+        public int LastWin32Error { get { return _lastWin32Error; } }
+
+        /// <summary>
+        /// 确保图标已登记，返回「壳层里确实有这个图标」。幂等：已登记成功时只复核一次，不会重复 NIM_ADD。
+        /// MainForm 用它决定能不能隐藏窗口——返回 false 就绝不能 Hide()。
+        /// </summary>
+        public bool TryAdd()
+        {
+            _tryAddCalls++;
+            RefreshRegistration("TryAdd");
+            return _registrationOk;
+        }
+
+        /// <summary>一行可直接写日志的诊断：注册是否成功、错误码、exe 路径、explorer 是否在跑。</summary>
+        public string DiagnosticLine()
+        {
+            StringBuilder sb = new StringBuilder(320);
+            sb.Append("ok=").Append(_registrationOk ? "True" : "False");
+            sb.Append(" owner=").Append(_owner);
+            sb.Append(" flow=").Append(_lastFlow);
+            sb.Append(" addFailures=").Append(_addFailures);
+            sb.Append(" lastErr=").Append(_lastWin32Error);
+            sb.Append(" presenceChecks=").Append(_presenceChecks);
+            sb.Append(" shellAdd=").Append(_shellAdds);
+            sb.Append(" shellMod=").Append(_shellModifies);
+            sb.Append(" shellDel=").Append(_shellDeletes);
+            sb.Append(" shellFail=").Append(_shellFailures);
+            sb.Append(" version=").Append(_versionSet ? NOTIFYICON_VERSION_4 : 0);
+            sb.Append(" hwnd=0x").Append(_iconHwnd.ToInt64().ToString("X"));
+            sb.Append(" uID=").Append(_iconId);
+            sb.Append(" exe=").Append(ExecutablePath());
+
+            string stamp = "";
+            try
+            {
+                DateTime w = System.IO.File.GetLastWriteTime(ExecutablePath());
+                stamp = w.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            catch (Exception) { }
+            if (stamp.Length != 0) sb.Append(" exeStamp=").Append(stamp);
+
+            sb.Append(" session=").Append(CurrentSessionId());
+            sb.Append(" explorer=").Append(DescribeExplorer());
+            return sb.ToString();
+        }
 
         /// <summary>主窗口关闭按钮 = 收起到托盘；真正退出时才放行。</summary>
         public void Bind(Form main)
@@ -144,7 +434,8 @@ namespace DesktopCalendar.UI
                     _notify.Icon = _appIcon;
                 }
                 if (_notify.Text != _tooltip) _notify.Text = _tooltip;
-                if (!_notify.Visible) _notify.Visible = true;
+                if (!ForceOwnIconRegistration && !_notify.Visible) _notify.Visible = true;
+                RefreshRegistration("EnsureVisible");
                 _visibleEnsures++;
             }
             catch (Exception) { }
@@ -155,12 +446,33 @@ namespace DesktopCalendar.UI
             if (_notify == null) return;
             string body = text == null ? "" : text;
             if (body.Length > 250) body = body.Substring(0, 250);
+            _lastBalloon = body;
+
+            if (!_registrationOk)
+            {
+                DiagnosticLog.Write("tray: 气泡跳过（托盘未注册）title=" + SafeText(title));
+                return;
+            }
+
+            bool ok = false;
+            int err = 0;
+            _shellModifies++;
             try
             {
-                _notify.ShowBalloonTip(5000, title == null ? "桌面日历" : title, body, ToolTipIcon.Info);
-                _lastBalloon = body;
+                ok = Shell.ShowInfo(_iconHwnd, _iconId, _iconGuid, title == null ? "桌面日历" : title, body, NIIF_INFO, out err);
             }
-            catch (Exception) { }
+            catch (Exception)
+            {
+                ok = false;
+                err = -3;
+            }
+
+            if (!ok)
+            {
+                _shellFailures++;
+                _lastWin32Error = err;
+                DiagnosticLog.Write("tray: NIM_MODIFY(NIF_INFO) 失败 err=" + err);
+            }
         }
 
         public void SetTooltip(string text)
@@ -170,6 +482,36 @@ namespace DesktopCalendar.UI
             if (t.Length > TOOLTIP_MAX) t = t.Substring(0, TOOLTIP_MAX);
             _tooltip = t;
             if (_notify != null) _notify.Text = t;
+            PushTooltipToShell();
+        }
+
+        /// <summary>注册失败时给用户的唯一一次提示：先试气泡，气泡发不出去才弹一次对话框。</summary>
+        internal void NoticeFallbackToTaskbar()
+        {
+            string brief = "托盘图标注册失败（错误码 " + _lastWin32Error + "），已改为最小化到任务栏。";
+            if (_registrationOk)
+            {
+                // 图标其实还在（只是复核慢了一步）：用气泡说一声，不打扰
+                ShowBalloon("桌面日历", brief);
+                return;
+            }
+            if (_fallbackNoticeShown) return;
+            _fallbackNoticeShown = true;
+            _noticeCount++;
+            string msg = brief + "\r\n\r\n请把下面这行信息反馈给开发者：\r\n" + DiagnosticLine();
+            _lastNoticeText = msg;
+            DiagnosticLog.Write("tray: 兜底提示（整进程只弹一次）" + brief + " | " + DiagnosticLine());
+            if (NoticeSink != null)
+            {
+                try { NoticeSink(msg); }
+                catch (Exception) { }
+                return;
+            }
+            try
+            {
+                MessageBox.Show(msg, "桌面日历", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception) { }
         }
 
         // ---------------------------------------------------------------- 测试钩子
@@ -181,8 +523,321 @@ namespace DesktopCalendar.UI
         internal int VisibleEnsures { get { return _visibleEnsures; } }
         internal int DestroyedHicons { get { return _destroyedHicons; } }
         internal IntPtr MessageWindowHandle { get { return _msgWindow == null ? IntPtr.Zero : _msgWindow.Handle; } }
+        internal string RegistrationOwner { get { return _owner; } }
+        internal int ShellAdds { get { return _shellAdds; } }
+        internal int PresenceChecks { get { return _presenceChecks; } }
+        internal bool VersionSet { get { return _versionSet; } }
+        internal IntPtr IconSlotHwnd { get { return _iconHwnd; } }
+        internal int IconSlotId { get { return _iconId; } }
+        internal Guid IconSlotGuid { get { return _iconGuid; } }
+        internal static Guid OwnSlotGuid { get { return TrayGuid; } }
+        internal static int TryAddCalls { get { return _tryAddCalls; } }
+        internal static int NoticeCount { get { return _noticeCount; } }
+        internal static string LastNoticeText { get { return _lastNoticeText; } }
+
+        /// <summary>测试钩子：把「只弹一次」的静态状态清干净，让每个用例互不影响。</summary>
+        internal static void ResetNoticeForTests()
+        {
+            _fallbackNoticeShown = false;
+            _noticeCount = 0;
+            _lastNoticeText = "";
+            _tryAddCalls = 0;
+        }
+
+        /// <summary>测试钩子：直接问壳层某个槽位是否真的在托盘里。</summary>
+        internal bool QueryIconSlot(IntPtr hwnd, int id, Guid guid)
+        {
+            return IconSlotPresent(hwnd, id, guid);
+        }
+
+        // ---------------------------------------------------------------- 注册与复核
+
+        /// <summary>
+        /// 复核托盘注册状态：先问壳层 NotifyIcon 的槽位在不在，不在就自己 NIM_ADD 一个。
+        /// 所有壳层调用的返回值都检查（不再有静默失败）。
+        /// </summary>
+        private void RefreshRegistration(string flow)
+        {
+            if (_disposed || _notify == null) return;
+            _lastFlow = flow == null ? "" : flow;
+
+            IntPtr notifyHwnd;
+            int notifyId;
+            bool haveNotifyId = TryReadNotifyIconIdentity(out notifyHwnd, out notifyId);
+            bool notifyPresent = haveNotifyId && IconSlotPresent(notifyHwnd, notifyId, Guid.Empty);
+
+            if (!ForceOwnIconRegistration && notifyPresent)
+            {
+                if (_owner == "owned") RemoveOwnIcon("notify-recovered");
+                _owner = "notify";
+                _iconHwnd = notifyHwnd;
+                _iconId = notifyId;
+                _iconGuid = Guid.Empty;
+                _registrationOk = true;
+                return;
+            }
+
+            if (_owner == "owned" && _msgWindow != null &&
+                IconSlotPresent(_msgWindow.Handle, 1, TrayGuid))
+            {
+                _iconHwnd = _msgWindow.Handle;
+                _iconId = 1;
+                _iconGuid = TrayGuid;
+                _registrationOk = true;
+                return;
+            }
+
+            if (_owner == "owned")
+            {
+                // 上一轮自注册的槽位没了（explorer 重启 / 被清理），重新登记
+                AddOwnIcon(flow);
+                return;
+            }
+
+            AddOwnIcon(flow);
+        }
+
+        /// <summary>自己登记托盘图标：NIM_ADD + NIM_SETVERSION + GetRect 复核，全部检查返回值。</summary>
+        private bool AddOwnIcon(string flow)
+        {
+            if (_msgWindow == null || _msgWindow.Handle == IntPtr.Zero)
+            {
+                _registrationOk = false;
+                _owner = "none";
+                DiagnosticLog.Write("tray: 自注册放弃——没有消息窗口 flow=" + flow);
+                return false;
+            }
+
+            IntPtr hwnd = _msgWindow.Handle;
+            IntPtr hicon = _appIcon == null ? IntPtr.Zero : _appIcon.Handle;
+
+            bool added = false;
+            int err = 0;
+            _shellAdds++;
+            try
+            {
+                added = Shell.AddIcon(hwnd, 1, TrayGuid, hicon, _tooltip, WM_TRAYICON, out err);
+            }
+            catch (Exception)
+            {
+                added = false;
+                err = -3;
+            }
+
+            if (!added)
+            {
+                _addFailures++;
+                _shellFailures++;
+                _lastWin32Error = err;
+                _owner = "none";
+                _registrationOk = false;
+                DiagnosticLog.Write(string.Format(
+                    "tray: NIM_ADD 失败 flow={0} err={1} {2}", flow, _lastWin32Error, DiagnosticLine()));
+                return false;
+            }
+
+            bool versioned = false;
+            int verr = 0;
+            try
+            {
+                versioned = Shell.SetVersion(hwnd, 1, TrayGuid, NOTIFYICON_VERSION_4, out verr);
+            }
+            catch (Exception)
+            {
+                versioned = false;
+                verr = -3;
+            }
+            _versionSet = versioned;
+            if (!versioned)
+            {
+                _shellFailures++;
+                _lastWin32Error = verr;
+            }
+
+            // NIM_ADD 说成功不等于壳层真收下了，再用 GetRect 问一次
+            bool present = IconSlotPresent(hwnd, 1, TrayGuid);
+            _owner = present ? "owned" : "none";
+            _registrationOk = present;
+
+            DiagnosticLog.Write(string.Format(
+                "tray: NIM_ADD 成功 flow={0} add=True setver={1} present={2} err={3} {4}",
+                flow, versioned, present, _lastWin32Error, DiagnosticLine()));
+            return present;
+        }
+
+        private void RemoveOwnIcon(string flow)
+        {
+            if (_msgWindow == null || _msgWindow.Handle == IntPtr.Zero) return;
+            try
+            {
+                int derr = 0;
+                _shellDeletes++;
+                bool ok = Shell.DeleteIcon(_msgWindow.Handle, 1, TrayGuid, out derr);
+                if (!ok)
+                {
+                    _shellFailures++;
+                    _lastWin32Error = derr;
+                    DiagnosticLog.Write("tray: NIM_DELETE 失败 flow=" + flow + " err=" + derr);
+                }
+            }
+            catch (Exception) { }
+            _owner = "none";
+        }
+
+        /// <summary>问壳层：这个槽位的图标真的在托盘里吗。hr == S_OK 才返回 true。</summary>
+        private bool IconSlotPresent(IntPtr hwnd, int id, Guid guid)
+        {
+            if (hwnd == IntPtr.Zero && guid == Guid.Empty) return false;
+            _presenceChecks++;
+            try
+            {
+                return Shell.IsPresent(hwnd, id, guid);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>读 NotifyIcon 自己的隐藏窗口句柄与 uID（GetRect 需要用它问「图标在不在」）。</summary>
+        private bool TryReadNotifyIconIdentity(out IntPtr hwnd, out int id)
+        {
+            hwnd = IntPtr.Zero;
+            id = 0;
+            if (_notify == null) return false;
+            try
+            {
+                Type t = typeof(NotifyIcon);
+                FieldInfo fw = t.GetField("window", BindingFlags.Instance | BindingFlags.NonPublic);
+                FieldInfo fi = t.GetField("id", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (fw == null || fi == null) return false;
+
+                NativeWindow w = fw.GetValue(_notify) as NativeWindow;
+                if (w == null) return false;
+                IntPtr h = w.Handle;
+                if (h == IntPtr.Zero) return false;
+
+                object o = fi.GetValue(_notify);
+                if (!(o is int)) return false;
+
+                hwnd = h;
+                id = (int)o;
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        private static NOTIFYICONDATAW BuildData(IntPtr hwnd, int id, Guid guid, int flags, IntPtr hicon, string tip, int callbackMessage)
+        {
+            NOTIFYICONDATAW d = new NOTIFYICONDATAW();
+            d.cbSize = Marshal.SizeOf(typeof(NOTIFYICONDATAW));
+            d.hWnd = hwnd;
+            d.uID = id;
+            d.uFlags = flags;
+            d.uCallbackMessage = callbackMessage;
+            d.hIcon = hicon;
+            d.szTip = Truncate(tip, TOOLTIP_MAX);
+            d.guidItem = guid;
+            d.uVersion = NOTIFYICON_VERSION_4;
+            return d;
+        }
+
+        private void PushTooltipToShell()
+        {
+            if (_disposed || !_registrationOk) return;
+            try
+            {
+                int terr = 0;
+                _shellModifies++;
+                if (!Shell.SetTip(_iconHwnd, _iconId, _iconGuid, _tooltip, out terr))
+                {
+                    _shellFailures++;
+                    _lastWin32Error = terr;
+                    DiagnosticLog.Write("tray: NIM_MODIFY(NIF_TIP) 失败 err=" + terr);
+                }
+            }
+            catch (Exception) { }
+        }
 
         // ---------------------------------------------------------------- 内部
+
+        private static string Truncate(string s, int max)
+        {
+            if (s == null) return "";
+            if (max <= 0) return "";
+            if (s.Length <= max) return s;
+            return s.Substring(0, max);
+        }
+
+        private static string SafeText(string s)
+        {
+            return s == null ? "" : s;
+        }
+
+        private static string ExecutablePath()
+        {
+            try
+            {
+                string p = Application.ExecutablePath;
+                return p == null ? "" : p;
+            }
+            catch (Exception)
+            {
+                return "";
+            }
+        }
+
+        private static int CurrentSessionId()
+        {
+            try
+            {
+                using (Process p = Process.GetCurrentProcess())
+                {
+                    return p.SessionId;
+                }
+            }
+            catch (Exception)
+            {
+                return -1;
+            }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindWindow(string className, string windowName);
+
+        private static string DescribeExplorer()
+        {
+            try
+            {
+                Process[] ps = Process.GetProcessesByName("explorer");
+                if (ps == null || ps.Length == 0)
+                {
+                    // 进程列表拿不到（受限环境）时，任务栏窗口还在就说明 explorer 活着
+                    IntPtr tray = FindWindow("Shell_TrayWnd", null);
+                    if (tray != IntPtr.Zero)
+                    {
+                        return "tray-window=0x" + tray.ToInt64().ToString("X") + "(pid-list-empty)";
+                    }
+                    return "not-running";
+                }
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < ps.Length; i++)
+                {
+                    if (i > 0) sb.Append('+');
+                    sb.Append("pid=").Append(ps[i].Id).Append("/s").Append(ps[i].SessionId);
+                    try { ps[i].Dispose(); }
+                    catch (Exception) { }
+                }
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "unknown(" + ex.GetType().Name + ")";
+            }
+        }
 
         private static Font BoldOf(Font f)
         {
@@ -312,20 +967,51 @@ namespace DesktopCalendar.UI
             HintOnce();
         }
 
-        /// <summary>explorer 重建了任务栏：壳层那边的图标已经没了，重新走一遍 NIM_ADD。</summary>
+        /// <summary>explorer 重建了任务栏：壳层那边的图标已经没了，重新登记并复核。</summary>
         private void OnTaskbarCreated()
         {
             if (_disposed || _notify == null) return;
             try
             {
-                // NotifyIcon.Visible 的 setter 在值没变时是空操作，
-                // 所以必须先置 false 再置 true，才会真的重新 SendNotification(NIM_ADD)。
-                if (_notify.Visible) _notify.Visible = false;
-                _notify.Icon = _appIcon;
-                _notify.Text = _tooltip;
-                _notify.ContextMenuStrip = _menu;
-                _notify.Visible = true;
+                if (!ForceOwnIconRegistration)
+                {
+                    // NotifyIcon.Visible 的 setter 在值没变时是空操作，所以必须先置 false 再置 true
+                    if (_notify.Visible) _notify.Visible = false;
+                    _notify.Icon = _appIcon;
+                    _notify.Text = _tooltip;
+                    _notify.ContextMenuStrip = _menu;
+                    _notify.Visible = true;
+                }
+                _owner = "none";
+                RefreshRegistration("TaskbarCreated");
                 _taskbarRecoveries++;
+                DiagnosticLog.Write("tray: TaskbarCreated 恢复 " + DiagnosticLine());
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>自注册图标被点击（NOTIFYICON_VERSION_4：LOWORD(lParam) 是鼠标消息）。</summary>
+        private void OnTrayMessage(int code)
+        {
+            if (_disposed) return;
+            if (code == WM_LBUTTONUP || code == WM_LBUTTONDBLCLK)
+            {
+                RaiseShowMain();
+                return;
+            }
+            if (code == WM_RBUTTONUP || code == WM_CONTEXTMENU)
+            {
+                ShowMenuAtCursor();
+            }
+        }
+
+        private void ShowMenuAtCursor()
+        {
+            if (_menu == null) return;
+            try
+            {
+                RefreshMenuState();
+                _menu.Show(Cursor.Position);
             }
             catch (Exception) { }
         }
@@ -432,7 +1118,10 @@ namespace DesktopCalendar.UI
 
         // ---------------------------------------------------------------- 隐藏窗口
 
-        /// <summary>只用来接 TaskbarCreated 的隐藏顶层窗口（广播消息不会送到 message-only 窗口）。</summary>
+        /// <summary>
+        /// 隐藏顶层窗口：接 TaskbarCreated（广播消息不会送到 message-only 窗口），
+        /// 同时作为本类自注册托盘图标的回调窗口。
+        /// </summary>
         private sealed class TrayMessageWindow : NativeWindow, IDisposable
         {
             private readonly TrayController _owner;
@@ -451,9 +1140,18 @@ namespace DesktopCalendar.UI
 
             protected override void WndProc(ref Message m)
             {
-                if (_owner != null && WmTaskbarCreated != 0 && m.Msg == WmTaskbarCreated)
+                TrayController owner = _owner;
+                if (owner != null)
                 {
-                    _owner.OnTaskbarCreated();
+                    if (WmTaskbarCreated != 0 && m.Msg == WmTaskbarCreated)
+                    {
+                        owner.OnTaskbarCreated();
+                    }
+                    else if (m.Msg == WM_TRAYICON)
+                    {
+                        int raw = m.LParam.ToInt32();
+                        owner.OnTrayMessage((int)(raw & 0xFFFF));
+                    }
                 }
                 base.WndProc(ref m);
             }
@@ -488,6 +1186,9 @@ namespace DesktopCalendar.UI
                 catch (Exception) { }
                 _main = null;
             }
+
+            // 自注册的图标必须先 NIM_DELETE 掉，再销毁它的回调窗口
+            if (_owner == "owned") RemoveOwnIcon("dispose");
 
             if (_msgWindow != null)
             {
@@ -535,6 +1236,10 @@ namespace DesktopCalendar.UI
                 }
                 catch (Exception) { }
             }
+
+            if (Current == this) Current = null;
+            _registrationOk = false;
+            _owner = "none";
         }
     }
 }

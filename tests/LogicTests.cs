@@ -571,10 +571,20 @@ namespace DesktopCalendar.Tests
                 Eq(Path.Combine(dir, "data.json"), store.DataFilePath, "DataFilePath = <dir>\\data.json");
                 Eq(null, store.LastError, "新建 Store LastError 为 null");
 
-                // 默认数据目录 = %APPDATA%\DesktopCalendar（只校验路径推导，不写入）
+                // 默认数据目录 = %APPDATA%\DesktopCalendar；若该目录被策略/沙箱拒绝写入，
+                // Store 会回退到 exe 同级 data（DataDirFallback=true），两种结果都算符合契约。
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                Eq(Path.Combine(Path.Combine(appData, "DesktopCalendar"), "data.json"),
-                    new Store().DataFilePath, "默认 DataFilePath = %APPDATA%\\DesktopCalendar\\data.json");
+                Store defStore = new Store();
+                if (defStore.DataDirFallback)
+                {
+                    Check(defStore.DataFilePath.EndsWith("\\data\\data.json", StringComparison.OrdinalIgnoreCase),
+                        "默认 DataFilePath 回退到 exe 同级 data（%APPDATA% 不可写时）");
+                }
+                else
+                {
+                    Eq(Path.Combine(Path.Combine(appData, "DesktopCalendar"), "data.json"),
+                        defStore.DataFilePath, "默认 DataFilePath = %APPDATA%\\DesktopCalendar\\data.json");
+                }
 
                 ScheduleItem a = NewItem("周会准备", new DateTime(2024, 3, 11), 9, 0, RepeatKind.None);
                 a.Id = "id-a";
@@ -978,8 +988,18 @@ namespace DesktopCalendar.Tests
                 Eq(Path.GetFullPath("rel-dc-sub"), rel, "相对路径规整结果 = Path.GetFullPath(相对路径)");
 
                 Store s = new Store();
-                Eq(defaultDir, s.DataDir, "new Store() 的 DataDir 仍为 %APPDATA%\\DesktopCalendar（契约未改）");
-                Eq(Path.Combine(defaultDir, "data.json"), s.DataFilePath, "new Store() 的 DataFilePath = data.json");
+                if (s.DataDirFallback)
+                {
+                    Check(s.DataDir.EndsWith("\\data", StringComparison.OrdinalIgnoreCase),
+                        "new Store() 首选目录不可写时回退到本地 data 目录");
+                    Check(s.DataFilePath.EndsWith("\\data\\data.json", StringComparison.OrdinalIgnoreCase),
+                        "new Store() 回退后 DataFilePath 指向本地 data.json");
+                }
+                else
+                {
+                    Eq(defaultDir, s.DataDir, "new Store() 的 DataDir 仍为 %APPDATA%\\DesktopCalendar（契约未改）");
+                    Eq(Path.Combine(defaultDir, "data.json"), s.DataFilePath, "new Store() 的 DataFilePath = data.json");
+                }
             }
             finally
             {
