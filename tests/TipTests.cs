@@ -311,7 +311,7 @@ namespace DesktopCalendar.Tests
                 Dump(r2.Tips));
         }
 
-        /// <summary>⑧ 今天无日程时 TipText 只返回用户池内容。⑨ _rTipEdit 与 _rTipNext 不相交。</summary>
+        /// <summary>⑧ 今天无日程时 TipText 只返回用户池内容。⑨ 提示面板几何：编辑链接在面板头右上，行区域嵌在面板内。</summary>
         private static void Case8And9()
         {
             string dir = NewDir();
@@ -337,8 +337,8 @@ namespace DesktopCalendar.Tests
             if (form == null)
             {
                 Check("8 TipText 用户池非空时只返回用户池内容", false, "MainForm 构造失败：" + err);
-                Check("9a _rTipEdit 与 _rTipNext 不相交", false, "MainForm 构造失败：" + err);
-                Check("9b 编辑按钮几何由换一条派生", false, "MainForm 构造失败：" + err);
+                Check("9a 编辑链接在提示面板内右上", false, "MainForm 构造失败：" + err);
+                Check("9b 提示行区域嵌在面板内且头部留白", false, "MainForm 构造失败：" + err);
                 return;
             }
 
@@ -374,16 +374,18 @@ namespace DesktopCalendar.Tests
                         form.TipStoreRef == null ? -1 : form.TipStoreRef.Tips.Count));
 
                 Rectangle e = form.TipEditBounds;
-                Rectangle n = form.TipNextBounds;
-                Check("9a _rTipEdit 与 _rTipNext 不相交",
-                    !e.IntersectsWith(n) && e.Right <= n.Left,
-                    string.Format("edit={0} next={1}", Fmt(e), Fmt(n)));
-                Check("9b 编辑按钮由换一条派生（同高、同 Y、留 6px 间隙）",
-                    e.Height == n.Height && e.Y == n.Y && n.X - e.Right == 6 && e.Width >= 30,
-                    string.Format("edit={0} next={1}", Fmt(e), Fmt(n)));
-                Check("9c 两个按钮都落在提示卡内",
-                    form.TipStoreRef != null && e.X > 0 && n.Right > e.Right,
-                    string.Format("edit={0} next={1}", Fmt(e), Fmt(n)));
+                Rectangle panel = form.TipBounds;
+                Rectangle list = form.TipListBounds;
+                Check("9a 编辑链接在提示面板内右上",
+                    panel.Contains(e) && e.Right <= panel.Right - 4,
+                    string.Format("edit={0} panel={1}", Fmt(e), Fmt(panel)));
+                Check("9b 提示行区域嵌在面板内且头部留白",
+                    list.Y >= panel.Y + 24 && list.Right <= panel.Right - 4
+                    && list.Bottom <= panel.Bottom - 4 && panel.Height >= 150 && panel.Height <= 320,
+                    string.Format("list={0} panel={1}", Fmt(list), Fmt(panel)));
+                Check("9c 提示面板落在日程列表之下、状态区之上",
+                    e.X > 0 && panel.Bottom < form.ClientSize.Height - 40,
+                    string.Format("panel={0} clientH={1}", Fmt(panel), form.ClientSize.Height));
             }
             finally
             {

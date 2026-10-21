@@ -34,10 +34,15 @@ namespace DesktopCalendar.UI
         private const int ROW_STEP = 50;
         private const int ROW_RADIUS = 10;
         private const int PILL_RADIUS = 8;
-        private const int TIP_H = 96;
         private const int TIP_RADIUS = 10;
         private const int TIP_PAD = 12;
         private const int TIP_LINE_H = 20;
+        private const int TIP_ROW_H = 44;        // 提示行高（两行正文）
+        private const int TIP_ROW_STEP = 50;
+        private const int TIP_HEAD_H = 32;       // 面板头：标题 + 编辑
+        private const int TIP_MIN_H = 150;       // 面板高度钳制：目标约侧栏 1/3
+        private const int TIP_MAX_H = 320;
+        private const int WHEEL_ROWS = 3;        // 每格滚轮滚 3 行
         private const int NEW_H = 44;
         private const int DATE_HEAD_H = 56;
         private const int LIST_GAP = 10;
@@ -45,8 +50,6 @@ namespace DesktopCalendar.UI
         private const int MARK_Y = 18;
         private const int MARK_SIZE = 28;
         private const int TITLE_X = 64;          // 月份标题左边（标记右侧）
-        private const int TIP_BTN_W = 56;
-        private const int TIP_BTN_H = 20;
         private const int TIP_EDIT_W = 44;
 
         // ---------------------------------------------------------------- 命中 id
@@ -59,12 +62,10 @@ namespace DesktopCalendar.UI
         private const int HIT_TRAY = 6;
         private const int HIT_MIN = 7;
         private const int HIT_CLOSE = 8;
-        private const int HIT_TIP_NEXT = 9;
         private const int HIT_TIP_EDIT = 10;
         private const int HIT_ROW_BASE = 11;   // 10 让给 HIT_TIP_EDIT，行命中从 11 起
         private const int HIT_CIRCLE_BASE = 100;
 
-        private const string TIP_NEXT_LABEL = "换一条";
         private const string TIP_EDIT_LABEL = "编辑";
 
         private static readonly string[] WeekNames = new string[]
@@ -87,7 +88,7 @@ namespace DesktopCalendar.UI
         private int _leftW = 600;
         private int _sideX = 636;
         private int _statusTop = 656;
-        private int _tipIndex;                  // 「换一条」次数：仅当次会话生效，不落盘
+        private int _tipIndex;                  // 翻页游标：UI 已改为整列展示，仅供 TipText 测试契约使用，不落盘
 
         private Rectangle _monthCard;
         private Rectangle _sideCard;
@@ -100,9 +101,12 @@ namespace DesktopCalendar.UI
         private Rectangle _rTheme;
         private Rectangle _rTray;
         private Rectangle _rList;
-        private Rectangle _rTip;
-        private Rectangle _rTipNext;
+        private Rectangle _rTipPanel;
+        private Rectangle _rTipList;
         private Rectangle _rTipEdit;
+        private int _listScroll;                 // 日程列表滚动（px）
+        private int _tipScroll;                  // 提示面板滚动（px）
+        private readonly WheelRouter _wheelRouter;
         private Rectangle _rMin;
         private Rectangle _rClose;
 
@@ -117,6 +121,10 @@ namespace DesktopCalendar.UI
             _selected = DateTime.Today;
             // 与 _store 同目录：自定义提示不进 data.json，单独一个 tips.json
             _tipStore = new TipStore(store != null ? store.DataDir : null);
+
+            // 悬停即滚：光标在列表/提示面板上滚轮就生效，不要求先点一下拿焦点
+            _wheelRouter = new WheelRouter(this);
+            Application.AddMessageFilter(_wheelRouter);
 
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                      ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -231,14 +239,28 @@ namespace DesktopCalendar.UI
 
             Rectangle side = CardInner(_sideCard);
             _rNew = new Rectangle(side.X, side.Bottom - NEW_H, side.Width, NEW_H);
-            _rTip = new Rectangle(side.X, _rNew.Y - 12 - TIP_H, side.Width, TIP_H);
-            _rTipNext = new Rectangle(_rTip.Right - TIP_PAD - TIP_BTN_W, _rTip.Y + 9, TIP_BTN_W, TIP_BTN_H);
-            _rTipEdit = new Rectangle(_rTipNext.X - 6 - TIP_EDIT_W, _rTipNext.Y, TIP_EDIT_W, _rTipNext.Height);
 
-            int listTop = side.Y + DATE_HEAD_H + LIST_GAP;
-            int listH = _rTip.Y - LIST_GAP - listTop;
+            // 每日提示面板独占底部约 1/3：日程列表在上，提示面板在下，各自滚动
+            int contentTop = side.Y + DATE_HEAD_H + LIST_GAP;
+            int contentBottom = _rNew.Y - 12;
+            int tipH = side.Height / 3;
+            if (tipH < TIP_MIN_H) tipH = TIP_MIN_H;
+            if (tipH > TIP_MAX_H) tipH = TIP_MAX_H;
+            _rTipPanel = new Rectangle(side.X, contentBottom - tipH, side.Width, tipH);
+
+            int listH = _rTipPanel.Y - LIST_GAP - contentTop;
             if (listH < 0) listH = 0;
-            _rList = new Rectangle(side.X, listTop, side.Width, listH);
+            _rList = new Rectangle(side.X, contentTop, side.Width, listH);
+
+            _rTipEdit = new Rectangle(_rTipPanel.Right - TIP_PAD - TIP_EDIT_W, _rTipPanel.Y + 8, TIP_EDIT_W, 18);
+            int tipListTop = _rTipPanel.Y + TIP_HEAD_H;
+            _rTipList = new Rectangle(_rTipPanel.X + TIP_PAD, tipListTop,
+                _rTipPanel.Width - TIP_PAD * 2, _rTipPanel.Bottom - TIP_PAD - tipListTop);
+            if (_rTipList.Height < 0)
+            {
+                _rTipList = new Rectangle(_rTipList.X, tipListTop, _rTipList.Width, 0);
+            }
+            ClampScrolls();
 
             int pillY = _statusTop + (STATUS_H - BTN_H) / 2;
             _rTray = new Rectangle(w - PAD - 96, pillY, 96, BTN_H);
@@ -267,7 +289,71 @@ namespace DesktopCalendar.UI
                 list = null;
             }
             _dayItems = list == null ? new List<ScheduleItem>() : list;
+            ClampScrolls();
             Invalidate();
+        }
+
+        // ---------------------------------------------------------------- 滚轮
+
+        /// <summary>滚轮：光标在提示面板内滚提示，在日程列表内滚日程，其它区域不消费。</summary>
+        internal void HandleWheel(Point screen, int delta)
+        {
+            Point p = PointToClient(screen);
+            bool inTip = _rTipPanel.Contains(p);
+            bool inList = _rList.Contains(p);
+            if (!inTip && !inList) return;
+
+            int rows = delta > 0 ? -WHEEL_ROWS : WHEEL_ROWS;
+            if (inTip)
+            {
+                _tipScroll += rows * TIP_ROW_STEP;
+            }
+            else
+            {
+                _listScroll += rows * ROW_STEP;
+            }
+            ClampScrolls();
+            Invalidate();
+        }
+
+        private int TipRowCount()
+        {
+            IList<string> pool = ActiveTips();
+            return pool == null ? 0 : pool.Count;
+        }
+
+        private void ClampScrolls()
+        {
+            int total = _dayItems == null ? 0 : _dayItems.Count;
+            int maxList = total * ROW_STEP - _rList.Height;
+            if (maxList < 0) maxList = 0;
+            if (_listScroll > maxList) _listScroll = maxList;
+            if (_listScroll < 0) _listScroll = 0;
+
+            int maxTip = TipRowCount() * TIP_ROW_STEP - _rTipList.Height;
+            if (maxTip < 0) maxTip = 0;
+            if (_tipScroll > maxTip) _tipScroll = maxTip;
+            if (_tipScroll < 0) _tipScroll = 0;
+        }
+
+        /// <summary>把光标下的 WM_MOUSEWHEEL 转给主窗体（应用级过滤器，悬停即滚）。</summary>
+        private sealed class WheelRouter : IMessageFilter
+        {
+            private readonly MainForm _owner;
+            public WheelRouter(MainForm owner) { _owner = owner; }
+
+            public bool PreFilterMessage(ref Message m)
+            {
+                if (m.Msg != 0x20A) return false;   // WM_MOUSEWHEEL
+                if (_owner == null || _owner.IsDisposed || !_owner.Visible) return false;
+
+                long lp = m.LParam.ToInt64();
+                Point screen = new Point((int)(short)(lp & 0xFFFF), (int)(short)((lp >> 16) & 0xFFFF));
+                if (!_owner.Bounds.Contains(screen)) return false;
+                int delta = (short)(((long)m.WParam.ToInt64() >> 16) & 0xFFFF);
+                _owner.HandleWheel(screen, delta);
+                return true;   // 已消费，避免再进一次焦点控件的滚轮处理
+            }
         }
 
         private void RefreshAll()
@@ -366,9 +452,9 @@ namespace DesktopCalendar.UI
         }
 
         // 测试入口：只在同程序集内可见，UI 之外不给用。
-        internal Rectangle TipBounds { get { return _rTip; } }
+        internal Rectangle TipBounds { get { return _rTipPanel; } }
         internal Rectangle TipEditBounds { get { return _rTipEdit; } }
-        internal Rectangle TipNextBounds { get { return _rTipNext; } }
+        internal Rectangle TipListBounds { get { return _rTipList; } }
         internal TipStore TipStoreRef { get { return _tipStore; } }
 
         internal int TipIndexValue
@@ -666,12 +752,12 @@ namespace DesktopCalendar.UI
             DrawHeader(g, t);
 
             // Draw.Card 返回卡片内缩 1px 的内容矩形；再让开 CARD_PAD-1 正好等于 CardInner()，
-            // 也就是 LayoutRegions 用来排 _rList / _rTip / _rNew 的同一条公式。
+            // 也就是 LayoutRegions 用来排 _rList / _rTipPanel / _rNew 的同一条公式。
             Rectangle sideInner = Inset(sCard, CARD_PAD - 1);
             if (mCard.Width > 0 && sideInner.Width > 0 && sideInner.Height > 0)
             {
                 DrawSidebar(g, t, sideInner);
-                DrawTip(g, t);
+                DrawTipPanel(g, t);
             }
 
             DrawStatus(g, t);
@@ -759,7 +845,7 @@ namespace DesktopCalendar.UI
                 new Rectangle(0, 0, _dragBar.Width, _dragBar.Height));
         }
 
-        /// <summary>日程卡内容：日期头 56 → 统计行 → 列表 →（DrawTip）→ + 新建日程。</summary>
+        /// <summary>日程卡内容：日期头 56 → 统计行 → 日程列表（滚动）→ 每日提示面板（约 1/3 高，滚动）→ + 新建日程。</summary>
         private void DrawSidebar(Graphics g, Theme t, Rectangle inner)
         {
             int x = inner.X;
@@ -792,23 +878,21 @@ namespace DesktopCalendar.UI
                     new Rectangle(x, _rList.Y, w, 40), StringAlignment.Center, StringAlignment.Center);
             }
 
-            int cap = (_rList.Height + (ROW_STEP - ROW_H)) / ROW_STEP;
-            if (cap < 0) cap = 0;
-            int shown = total < cap ? total : cap;
-
-            for (int i = 0; i < shown; i++)
+            // 滚动视口：裁剪到列表区，只画可见行；内容超高时右侧画细滚动条
+            if (total > 0 && _rList.Height > 0)
             {
-                DrawRow(g, t, i, RowRect(i));
-            }
-
-            if (total > shown && _rList.Height > 0)
-            {
-                int y = _rList.Y + shown * ROW_STEP;
-                if (y + 18 <= _rList.Bottom)
+                g.SetClip(_rList);
+                int first = _listScroll / ROW_STEP;
+                for (int i = first; i < total; i++)
                 {
-                    Draw.Text(g, string.Format("还有 {0} 项未显示", total - shown), t.Small, t.TextMuted,
-                        new Rectangle(x, y, w, 18), StringAlignment.Near, StringAlignment.Center);
+                    Rectangle row = RowRect(i);
+                    if (row.Y >= _rList.Bottom) break;
+                    DrawRow(g, t, i, row);
                 }
+                g.ResetClip();
+
+                int contentH = total * ROW_STEP;
+                if (contentH > _rList.Height) DrawScrollThumb(g, t, _rList, contentH, _listScroll);
             }
 
             Rectangle r = _rNew;
@@ -819,33 +903,70 @@ namespace DesktopCalendar.UI
                 StringAlignment.Center, StringAlignment.Center);
         }
 
-        /// <summary>每日提示小卡：TipBg 面 + TipLine 1px 描边 + 圆角 10；右上「换一条」。</summary>
-        private void DrawTip(Graphics g, Theme t)
+        /// <summary>每日提示面板：TipBg 面 + TipLine 描边；头部「每日提示 / 编辑」，下面把全部提示逐条列出，滚轮滚动。</summary>
+        private void DrawTipPanel(Graphics g, Theme t)
         {
-            Rectangle r = _rTip;
+            Rectangle r = _rTipPanel;
             if (r.Width <= 40 || r.Height <= 30) return;
 
             Draw.Block(g, r, TIP_RADIUS, t.TipBg);
             Draw.StrokeRound(g, r, TIP_RADIUS, t.TipLine, 1f);
 
-            int titleW = r.Width - TIP_PAD * 2 - TIP_BTN_W - TIP_EDIT_W - 14;
-            if (titleW < 20) titleW = 20;
             Draw.Text(g, "每日提示", t.SmallBold, t.Accent,
-                new Rectangle(r.X + TIP_PAD, r.Y + 9, titleW, 18),
+                new Rectangle(r.X + TIP_PAD, r.Y + 8, 120, 18),
                 StringAlignment.Near, StringAlignment.Center);
 
             bool hotEdit = _hover == HIT_TIP_EDIT;
             Draw.Text(g, TIP_EDIT_LABEL, t.Small, hotEdit ? t.Accent : t.TextMuted, _rTipEdit,
                 StringAlignment.Far, StringAlignment.Center);
 
-            bool hot = _hover == HIT_TIP_NEXT;
-            Draw.Text(g, TIP_NEXT_LABEL, t.Small, hot ? t.Accent : t.TextMuted, _rTipNext,
-                StringAlignment.Far, StringAlignment.Center);
+            Draw.Line(g, r.X + TIP_PAD, r.Y + TIP_HEAD_H - 5f, r.Right - TIP_PAD, r.Y + TIP_HEAD_H - 5f,
+                      Draw.Blend(t.TipLine, t.TipBg, 0.4f), 1f);
 
-            string text = TipText(DateTime.Now);
+            int count = TipRowCount();
+            if (count == 0)
+            {
+                Draw.Text(g, "还没有提示，点右上「编辑」添加", t.Small, t.TextMuted,
+                    new Rectangle(_rTipList.X, _rTipList.Y, _rTipList.Width, 40),
+                    StringAlignment.Center, StringAlignment.Center);
+                return;
+            }
+
+            g.SetClip(_rTipList);
+            int first = _tipScroll / TIP_ROW_STEP;
+            for (int i = first; i < count; i++)
+            {
+                Rectangle row = TipRowRect(i);
+                if (row.Y >= _rTipList.Bottom) break;
+                DrawTipRow(g, t, i, row);
+            }
+            g.ResetClip();
+
+            int tipContentH = count * TIP_ROW_STEP;
+            if (tipContentH > _rTipList.Height) DrawScrollThumb(g, t, _rTipList, tipContentH, _tipScroll);
+        }
+
+        private Rectangle TipRowRect(int index)
+        {
+            return new Rectangle(_rTipList.X, _rTipList.Y + index * TIP_ROW_STEP - _tipScroll,
+                                 _rTipList.Width, TIP_ROW_H);
+        }
+
+        /// <summary>提示行：卡片底 + 左侧 3px 强调条 + 两行正文；与日程行同款观感，无完成圆圈。</summary>
+        private void DrawTipRow(Graphics g, Theme t, int index, Rectangle row)
+        {
+            IList<string> pool = ActiveTips();
+            if (pool == null || index >= pool.Count) return;
+            string text = pool[index] == null ? "" : pool[index];
+
+            Draw.FillRound(g, row, ROW_RADIUS, t.Card);
+            Draw.StrokeRound(g, row, ROW_RADIUS, Draw.Blend(t.TipLine, t.Card, 0.5f), 1f);
+
+            Rectangle bar = new Rectangle(row.X + 10, row.Y + 12, 3, TIP_ROW_H - 24);
+            Draw.FillRound(g, bar, 2, t.Accent);
+
             DrawTipBody(g, text, t.Small, t.TextSecondary,
-                new Rectangle(r.X + TIP_PAD, r.Y + 32, r.Width - TIP_PAD * 2, TIP_LINE_H * 2),
-                TIP_LINE_H);
+                new Rectangle(row.X + 24, row.Y + 2, row.Width - 24 - 10, TIP_ROW_H - 4), TIP_LINE_H);
         }
 
         /// <summary>最多两行正文：按像素宽度折行，超出部分 EllipsisCharacter 截断。</summary>
@@ -886,7 +1007,22 @@ namespace DesktopCalendar.UI
 
         private Rectangle RowRect(int index)
         {
-            return new Rectangle(_rList.X, _rList.Y + index * ROW_STEP, _rList.Width, ROW_H);
+            return new Rectangle(_rList.X, _rList.Y + index * ROW_STEP - _listScroll, _rList.Width, ROW_H);
+        }
+
+        /// <summary>细滚动条：视图右缘 3px 圆角拇指，按可视比例缩放。</summary>
+        private static void DrawScrollThumb(Graphics g, Theme t, Rectangle view, int contentH, int scroll)
+        {
+            if (contentH <= view.Height) return;
+            int trackH = view.Height - 8;
+            int thumbH = (int)((long)view.Height * view.Height / contentH);
+            if (thumbH < 24) thumbH = 24;
+            if (thumbH > trackH) thumbH = trackH;
+            int maxScroll = contentH - view.Height;
+            if (maxScroll < 1) maxScroll = 1;
+            int thumbY = view.Y + 4 + (trackH - thumbH) * scroll / maxScroll;
+            Rectangle thumb = new Rectangle(view.Right - 6, thumbY, 3, thumbH);
+            Draw.FillRound(g, thumb, 1, Draw.Blend(t.TextMuted, t.Card, 0.25f));
         }
 
         private Rectangle CircleRect(Rectangle row)
@@ -1050,7 +1186,6 @@ namespace DesktopCalendar.UI
             if (_rToday.Contains(p)) return HIT_TODAY;
             if (_rNew.Contains(p)) return HIT_NEW;
             if (_rTipEdit.Contains(p)) return HIT_TIP_EDIT;
-            if (_rTipNext.Contains(p)) return HIT_TIP_NEXT;
             if (_rAutoStart.Contains(p)) return HIT_AUTOSTART;
             if (_rTheme.Contains(p)) return HIT_THEME;
             if (_rTray.Contains(p)) return HIT_TRAY;
@@ -1059,7 +1194,7 @@ namespace DesktopCalendar.UI
 
             if (_dayItems != null && _dayItems.Count > 0 && _rList.Contains(p))
             {
-                int idx = (p.Y - _rList.Y) / ROW_STEP;
+                int idx = (p.Y - _rList.Y + _listScroll) / ROW_STEP;
                 if (idx >= 0 && idx < _dayItems.Count)
                 {
                     Rectangle row = RowRect(idx);
@@ -1109,7 +1244,6 @@ namespace DesktopCalendar.UI
             if (hit == HIT_TODAY) { GoToday(); return; }
             if (hit == HIT_NEW) { CreateItem(); return; }
             if (hit == HIT_TIP_EDIT) { OpenTipEditor(); return; }
-            if (hit == HIT_TIP_NEXT) { NextTip(); return; }
             if (hit == HIT_AUTOSTART) { ToggleAutoStart(); return; }
             if (hit == HIT_THEME) { ToggleTheme(); return; }
             if (hit == HIT_TRAY) { MinimizeToTray(); return; }
@@ -1144,6 +1278,7 @@ namespace DesktopCalendar.UI
         {
             if (disposing)
             {
+                Application.RemoveMessageFilter(_wheelRouter);
                 Theme.Changed -= HandleThemeChanged;
                 if (_scheduler != null) _scheduler.RemindersDue -= HandleRemindersDue;
                 for (int i = 0; i < _cards.Count; i++)

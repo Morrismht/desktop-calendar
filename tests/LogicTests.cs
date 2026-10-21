@@ -888,8 +888,16 @@ namespace DesktopCalendar.Tests
                     Eq(originalEnabled, AutoStart.IsEnabled, "TryEnable 失败后 IsEnabled 保持原值");
 
                     bool disabled = AutoStart.TryDisable(out error);
-                    Check(disabled, "无写权限但本就无启动项时 TryDisable 返回 true（无需写权限，不抛异常）");
-                    Check(string.IsNullOrEmpty(error), "无写权限且无需清理时 error 为空");
+                    if (original == null)
+                    {
+                        Check(disabled, "无写权限且无既有启动项时 TryDisable 返回 true（清理无目标，无需写权限）");
+                        Check(string.IsNullOrEmpty(error), "无写权限且无既有启动项时 error 为空");
+                    }
+                    else
+                    {
+                        Check(!disabled, "无写权限且有既有启动项时 TryDisable 返回 false（删不掉必须如实失败）");
+                        Check(!string.IsNullOrEmpty(error), "无写权限且有既有启动项时给出 error 文本");
+                    }
                     Eq(original, AutoStart.ReadRawValue(), "TryDisable 失败后注册表未被改动（无污染）");
                     Eq(originalEnabled, AutoStart.IsEnabled, "TryDisable 失败后 IsEnabled 保持原值");
 
@@ -1112,13 +1120,33 @@ namespace DesktopCalendar.Tests
                 }
 
                 string off;
-                Check(AutoStart.TryDisable(out off),
-                    "TryDisable 返回 true" + (off == null ? "" : "（error=" + off + "）"));
-                Eq(false, AutoStart.IsEnabled, "TryDisable 后 IsEnabled = false");
-                Eq("none", AutoStart.ActiveMechanism, "TryDisable 后 ActiveMechanism = none");
-                Eq(null, AutoStart.ReadRawValue(), "TryDisable 后注册表值已删除");
+                bool offOk = AutoStart.TryDisable(out off);
                 Eq(false, File.Exists(AutoStart.StartupCmdPath), "TryDisable 后 cmd 文件已删除");
-                Check(AutoStart.TryDisable(out off), "重复 TryDisable 不报错");
+                Eq(false, AutoStart.IsStartupCmdEnabled, "TryDisable 后 IsStartupCmdEnabled = false");
+                if (writable)
+                {
+                    Check(offOk, "TryDisable 返回 true" + (off == null ? "" : "（error=" + off + "）"));
+                    Eq(false, AutoStart.IsEnabled, "TryDisable 后 IsEnabled = false");
+                    Eq("none", AutoStart.ActiveMechanism, "TryDisable 后 ActiveMechanism = none");
+                    Eq(null, AutoStart.ReadRawValue(), "TryDisable 后注册表值已删除");
+                    Check(AutoStart.TryDisable(out off), "重复 TryDisable 不报错");
+                }
+                else if (originalValue == null)
+                {
+                    Check(offOk, "注册表被拒但本无值时 TryDisable 返回 true"
+                        + (off == null ? "" : "（error=" + off + "）"));
+                    Eq(false, AutoStart.IsEnabled, "注册表本无值时 TryDisable 后 IsEnabled = false");
+                    Eq("none", AutoStart.ActiveMechanism, "注册表本无值时 ActiveMechanism = none");
+                    Check(AutoStart.TryDisable(out off), "重复 TryDisable 不报错");
+                }
+                else
+                {
+                    Check(!offOk, "注册表被拒且存在既有值时 TryDisable 如实报未完全成功");
+                    Eq(originalValue, AutoStart.ReadRawValue(), "无写权限时注册表值如实保留（无污染）");
+                    Skip("无写权限且有既有注册表值：IsEnabled/ActiveMechanism 保持既有值",
+                        "本进程删不掉真机既有值，需在可写环境验证");
+                    Skip("重复 TryDisable 不报错", "同上，仅可在可写环境验证");
+                }
 
                 string fileAsDir = Path.Combine(tempDir, "not-a-dir");
                 File.WriteAllText(fileAsDir, "x");
