@@ -60,6 +60,7 @@ namespace DesktopCalendar.UI
         private const int HIT_TRAY = 6;
         private const int HIT_MIN = 7;
         private const int HIT_CLOSE = 8;
+        private const int HIT_SOUND = 9;
         private const int HIT_TIP_EDIT = 10;
         private const int HIT_ROW_BASE = 11;   // 10 让给 HIT_TIP_EDIT，行命中从 11 起
         private const int HIT_CIRCLE_BASE = 100;
@@ -98,6 +99,7 @@ namespace DesktopCalendar.UI
         private Rectangle _rNew;
         private Rectangle _rAutoStart;
         private Rectangle _rTheme;
+        private Rectangle _rSound;
         private Rectangle _rTray;
         private Rectangle _rList;
         private Rectangle _rTipPanel;
@@ -116,6 +118,8 @@ namespace DesktopCalendar.UI
         public MainForm(Store store, Scheduler scheduler)
         {
             _store = store;
+            _reminderSound = _store == null || _store.ReminderSound;
+            ReminderSound.Enabled = _reminderSound;
             _scheduler = scheduler;
             _selected = DateTime.Today;
             // 与 _store 同目录：自定义提示不进 data.json，单独一个 tips.json
@@ -277,6 +281,7 @@ namespace DesktopCalendar.UI
             _rTray = new Rectangle(w - PAD - 96, pillY, 96, BTN_H);
             _rTheme = new Rectangle(_rTray.X - 10 - 104, pillY, 104, BTN_H);
             _rAutoStart = new Rectangle(_rTheme.X - 10 - 128, pillY, 128, BTN_H);
+            _rSound = new Rectangle(_rAutoStart.X - 10 - 116, pillY, 116, BTN_H);
         }
 
         protected override void OnResize(EventArgs e)
@@ -660,6 +665,20 @@ namespace DesktopCalendar.UI
             Theme.Toggle();
         }
 
+        private bool _reminderSound = true;
+
+        private void ToggleReminderSound()
+        {
+            _reminderSound = !_reminderSound;
+            ReminderSound.Enabled = _reminderSound;
+            if (_store != null)
+            {
+                _store.ReminderSound = _reminderSound;
+                _store.Save();
+            }
+            Invalidate();
+        }
+
         /// <summary>托盘注册成功才允许隐藏主窗口；失败时必须留在任务栏上。</summary>
         internal static bool ShouldHideOnMinimize(bool registrationOk)
         {
@@ -720,6 +739,7 @@ namespace DesktopCalendar.UI
                     baseY = wa.Bottom - 16;
                 }
 
+                bool shown = false;
                 for (int i = 0; i < due.Count; i++)
                 {
                     if (_cards.Count >= 4) break;
@@ -728,7 +748,11 @@ namespace DesktopCalendar.UI
                     int offset = _cards.Count * 142;
                     _cards.Add(card);
                     card.ShowAt(new Point(baseX, baseY - offset));
+                    shown = true;
                 }
+
+                // 一批提醒只响一次，不按卡片数量重复响
+                if (shown) ReminderSound.Play();
             }
             catch (Exception)
             {
@@ -1150,6 +1174,8 @@ namespace DesktopCalendar.UI
             {
             }
 
+            DrawPill(g, _rSound, _reminderSound ? "提醒声音 · 开" : "提醒声音 · 关",
+                _hover == HIT_SOUND, _reminderSound, t);
             DrawPill(g, _rAutoStart, auto ? "开机自启 · 开" : "开机自启 · 关",
                      _hover == HIT_AUTOSTART, auto, t);
             UpdateAutoStartTip();
@@ -1215,6 +1241,7 @@ namespace DesktopCalendar.UI
             if (_rToday.Contains(p)) return HIT_TODAY;
             if (_rNew.Contains(p)) return HIT_NEW;
             if (_rTipEdit.Contains(p)) return HIT_TIP_EDIT;
+            if (_rSound.Contains(p)) return HIT_SOUND;
             if (_rAutoStart.Contains(p)) return HIT_AUTOSTART;
             if (_rTheme.Contains(p)) return HIT_THEME;
             if (_rTray.Contains(p)) return HIT_TRAY;
@@ -1273,6 +1300,7 @@ namespace DesktopCalendar.UI
             if (hit == HIT_TODAY) { GoToday(); return; }
             if (hit == HIT_NEW) { CreateItem(); return; }
             if (hit == HIT_TIP_EDIT) { OpenTipEditor(); return; }
+            if (hit == HIT_SOUND) { ToggleReminderSound(); return; }
             if (hit == HIT_AUTOSTART) { ToggleAutoStart(); return; }
             if (hit == HIT_THEME) { ToggleTheme(); return; }
             if (hit == HIT_TRAY) { MinimizeToTray(); return; }

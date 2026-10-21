@@ -45,6 +45,7 @@ function Invoke-PsTest([string]$name, [string]$relative) {
 Invoke-CSharpTest 'LogicTests' 'LogicTests.cs'
 Invoke-CSharpTest 'TipTests' 'TipTests.cs'
 Invoke-CSharpTest 'TrayFixTests' 'TrayFixTests.cs'
+Invoke-CSharpTest 'SoundTests' 'SoundTests.cs'
 Invoke-PsTest 'TrayV3' 'tests\tray_v3_tests.ps1'
 Invoke-PsTest 'AutoStartV2' 'tests\autostart_v2_tests.ps1'
 

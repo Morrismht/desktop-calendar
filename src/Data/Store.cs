@@ -57,6 +57,18 @@ namespace DesktopCalendar.Data
 
         // ---------------- 数据目录解析 ----------------
 
+        /// <summary>data.json 根节点里存提醒音开关的键名。</summary>
+        public const string ReminderSoundKey = "reminderSound";
+
+        private bool _reminderSound = true;
+
+        /// <summary>提醒卡片弹出时是否播放提示音（默认开，跟日程一起存在 data.json 根节点）。</summary>
+        public bool ReminderSound
+        {
+            get { return _reminderSound; }
+            set { _reminderSound = value; }
+        }
+
         public const string DataDirArg = "--datadir";
         public const string DataDirEnv = "DESKTOP_CALENDAR_DATA";
 
@@ -235,6 +247,7 @@ namespace DesktopCalendar.Data
                     return;
                 }
                 string text = File.ReadAllText(_dataFilePath, Encoding.UTF8);
+                _reminderSound = ReadRootFlag(text, ReminderSoundKey, true);
                 List<Dictionary<string, object>> rows = ParseRows(text);
                 for (int i = 0; i < rows.Count; i++)
                 {
@@ -277,6 +290,7 @@ namespace DesktopCalendar.Data
                 return;
             }
             string text = File.ReadAllText(_dataFilePath, Encoding.UTF8);
+            _reminderSound = ReadRootFlag(text, ReminderSoundKey, true);
             List<Dictionary<string, object>> rows = ParseRows(text);
             for (int i = 0; i < rows.Count; i++)
             {
@@ -294,6 +308,7 @@ namespace DesktopCalendar.Data
             Dictionary<string, object> root = new Dictionary<string, object>();
             root["version"] = 1;
             root["savedAt"] = DateTime.Now;
+            root[ReminderSoundKey] = _reminderSound;
             List<object> rows = new List<object>();
             for (int i = 0; i < _items.Count; i++)
             {
@@ -343,6 +358,27 @@ namespace DesktopCalendar.Data
             }
             catch (Exception)
             {
+            }
+        }
+
+        /// <summary>读 data.json 根节点上的一个布尔开关；文件缺失/格式不对都退回默认值，绝不抛。</summary>
+        private static bool ReadRootFlag(string text, string key, bool def)
+        {
+            if (text == null) return def;
+
+            string t = text.Trim().TrimStart('\uFEFF');
+            if (t.Length == 0 || t[0] != '{') return def;
+
+            try
+            {
+                Dictionary<string, object> root = Json.ReadObject(t);
+                object raw;
+                if (!root.TryGetValue(key, out raw) || raw == null) return def;
+                return Json.Bool(root, key, def);
+            }
+            catch (Exception)
+            {
+                return def;
             }
         }
 
