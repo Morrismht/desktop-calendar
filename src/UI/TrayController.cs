@@ -289,12 +289,16 @@ namespace DesktopCalendar.UI
 
             e.Cancel = true;
             if (_main != null) _main.Hide();
+            HintOnce();
+        }
 
-            if (_lastBalloon.Length == 0)
-            {
-                ShowBalloon("桌面日历", "已收进右下角托盘，双击图标即可重新打开。\n若看不到图标：点任务栏的 ^ 展开，把日历图标拖到任务栏上就会常驻。");
-                _lastBalloon = "hinted";
-            }
+        /// <summary>第一次真正收起时提示一次托盘位置；不管用户走的是 × 还是 — 都提示。</summary>
+        private void HintOnce()
+        {
+            if (_lastBalloon.Length != 0) return;
+            if (_disposed || _notify == null) return;
+            ShowBalloon("桌面日历", "已收进右下角托盘，双击图标即可重新打开。\n若看不到图标：点任务栏的 ^ 展开，把日历图标拖到任务栏上就会常驻。");
+            _lastBalloon = "hinted";
         }
 
         /// <summary>主窗口被隐藏（收起到托盘）时，把托盘图标重新确认一遍。</summary>
@@ -303,7 +307,9 @@ namespace DesktopCalendar.UI
             if (_disposed) return;
             Form f = _main;
             if (f == null) return;
-            if (!f.Visible) EnsureVisible();
+            if (f.Visible) return;
+            EnsureVisible();
+            HintOnce();
         }
 
         /// <summary>explorer 重建了任务栏：壳层那边的图标已经没了，重新走一遍 NIM_ADD。</summary>
