@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using DesktopCalendar.Data;
 using DesktopCalendar.Services;
 
@@ -278,6 +279,16 @@ namespace DesktopCalendar.UI
         private int _presenceChecks;
         private string _lastFlow = "init";
 
+        // ------------------------------------------------ Win11 托盘图标提升（IsPromoted）
+
+        private const string NotifyIconSettingsKey = @"Control Panel\NotifyIconSettings";
+
+        /// <summary>最近一次提升尝试的结果：already / set:&lt;key&gt; / no-entry / no-key / err:…</summary>
+        private string _promoteNote = "none";
+        private bool _promoteApplied;
+        private bool _promoteReAdding;
+        private Timer _promoteTimer;
+
         private static bool _fallbackNoticeShown;
         private static int _tryAddCalls;
         private static int _noticeCount;
@@ -396,6 +407,7 @@ namespace DesktopCalendar.UI
             catch (Exception) { }
             if (stamp.Length != 0) sb.Append(" exeStamp=").Append(stamp);
 
+            sb.Append(" promote=").Append(_promoteNote);
             sb.Append(" session=").Append(CurrentSessionId());
             sb.Append(" explorer=").Append(DescribeExplorer());
             return sb.ToString();
@@ -574,6 +586,7 @@ namespace DesktopCalendar.UI
                 _iconId = notifyId;
                 _iconGuid = Guid.Empty;
                 _registrationOk = true;
+                PromoteNotifyIcon();
                 return;
             }
 
@@ -595,6 +608,24 @@ namespace DesktopCalendar.UI
             }
 
             AddOwnIcon(flow);
+        }
+
+        /// <summary>
+        /// NotifyIcon 的槽位在托盘里，但 Win11 会把它丢进「隐藏的图标」溢出区——用户看不见。
+        /// 把 IsPromoted 置 1 后让 NotifyIcon 重登记一次，壳层才会按新设置重建图标。
+        /// </summary>
+        private void PromoteNotifyIcon()
+        {
+            if (!TryPromoteTrayIcon() || _notify == null) return;
+            try
+            {
+                _notify.Visible = false;
+                _notify.Visible = true;
+            }
+            catch (Exception ex)
+            {
+                DiagnosticLog.Write("tray: 提升后重登记失败 " + SafeText(ex.Message));
+            }
         }
 
         /// <summary>自己登记托盘图标：NIM_ADD + NIM_SETVERSION + GetRect 复核，全部检查返回值。</summary>
@@ -662,7 +693,154 @@ namespace DesktopCalendar.UI
             DiagnosticLog.Write(string.Format(
                 "tray: NIM_ADD 成功 flow={0} add=True setver={1} present={2} err={3} {4}",
                 flow, versioned, present, _lastWin32Error, DiagnosticLine()));
+
+            // Win11 会把这个新图标丢进「隐藏的图标」溢出区：改完 IsPromoted 要重登记一次才生效
+            if (present && TryPromoteTrayIcon())
+            {
+                return ReaddOwnIcon(flow);
+            }
+            if (present) SchedulePromoteRetry();
             return present;
+        }
+
+        /// <summary>
+        /// 把本程序的托盘图标提到任务栏可见区。Windows 11 把新注册的通知图标默认放进溢出区（IsPromoted 为空），
+        /// 用户点最小化后根本找不到图标。条目在 HKCU\Control Panel\NotifyIconSettings\&lt;hash&gt;，
+        /// 按 ExecutablePath 的文件名匹配自己的那条，把 IsPromoted 置 1。
+        /// 返回 true 表示这次真改了值——壳层只在 NIM_ADD 时读它，所以调用方需要删掉再登记。
+        /// </summary>
+        private bool TryPromoteTrayIcon()
+        {
+            if (_promoteApplied) return false;
+
+            string exeName = "";
+            try { exeName = System.IO.Path.GetFileName(ExecutablePath()); }
+            catch (Exception) { }
+            if (exeName.Length == 0)
+            {
+                _promoteNote = "no-exe";
+                return false;
+            }
+
+            try
+            {
+                using (RegistryKey root = Registry.CurrentUser.OpenSubKey(NotifyIconSettingsKey, true))
+                {
+                    if (root == null)
+                    {
+                        _promoteNote = "no-key";
+                        return false;
+                    }
+
+                    string[] subs = root.GetSubKeyNames();
+                    int matched = 0;
+                    for (int i = 0; i < subs.Length; i++)
+                    {
+                        using (RegistryKey k = root.OpenSubKey(subs[i], true))
+                        {
+                            if (k == null) continue;
+                            string path = k.GetValue("ExecutablePath") as string;
+                            if (path == null || path.Length == 0) continue;
+
+                            string name = "";
+                            try { name = System.IO.Path.GetFileName(path); }
+                            catch (Exception) { }
+                            if (!string.Equals(name, exeName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                            matched++;
+                            if (ReadDword(k, "IsPromoted") == 1)
+                            {
+                                _promoteNote = "already";
+                                continue;
+                            }
+
+                            k.SetValue("IsPromoted", 1, RegistryValueKind.DWord);
+                            _promoteApplied = true;
+                            _promoteNote = "set:" + subs[i];
+                        }
+                    }
+
+                    if (matched == 0 && !_promoteApplied) _promoteNote = "no-entry";
+                }
+            }
+            catch (Exception ex)
+            {
+                _promoteNote = "err:" + SafeText(ex.Message);
+            }
+
+            if (_promoteApplied)
+            {
+                DiagnosticLog.Write("tray: 托盘图标提升 note=" + _promoteNote);
+            }
+            return _promoteApplied;
+        }
+
+        private static int ReadDword(RegistryKey k, string name)
+        {
+            object v = k.GetValue(name);
+            if (v is int) return (int)v;
+            if (v is long) return (int)(long)v;
+            return 0;
+        }
+
+        /// <summary>改完 IsPromoted 后重登记一次：NIM_DELETE + NIM_ADD，让壳层按新设置重建图标。</summary>
+        private bool ReaddOwnIcon(string flow)
+        {
+            if (_promoteReAdding) return _registrationOk;
+            _promoteReAdding = true;
+            try
+            {
+                RemoveOwnIcon(flow + "+promote");
+                return AddOwnIcon(flow + "+promote");
+            }
+            finally
+            {
+                _promoteReAdding = false;
+            }
+        }
+
+        /// <summary>
+        /// 首次启动时 explorer 要过一会儿才会把这条 NotifyIconSettings 落盘，2.5 秒后补一次。
+        /// 只补一次；失败只写日志，不再纠缠。
+        /// </summary>
+        private void SchedulePromoteRetry()
+        {
+            if (_promoteApplied || _promoteTimer != null || _disposed) return;
+            try
+            {
+                _promoteTimer = new Timer();
+                _promoteTimer.Interval = 2500;
+                _promoteTimer.Tick += delegate
+                {
+                    StopPromoteTimer();
+                    if (_disposed) return;
+                    if (TryPromoteTrayIcon() && _registrationOk)
+                    {
+                        ReaddOwnIcon("promote-retry");
+                    }
+                    else
+                    {
+                        DiagnosticLog.Write("tray: 图标提升未生效 note=" + _promoteNote);
+                    }
+                };
+                _promoteTimer.Start();
+            }
+            catch (Exception)
+            {
+                _promoteTimer = null;
+            }
+        }
+
+        private void StopPromoteTimer()
+        {
+            if (_promoteTimer == null) return;
+            try
+            {
+                _promoteTimer.Stop();
+                _promoteTimer.Dispose();
+            }
+            catch (Exception) { }
+            _promoteTimer = null;
         }
 
         private void RemoveOwnIcon(string flow)
@@ -1175,6 +1353,8 @@ namespace DesktopCalendar.UI
                 catch (Exception) { }
                 _main = null;
             }
+
+            StopPromoteTimer();
 
             // 自注册的图标必须先 NIM_DELETE 掉，再销毁它的回调窗口
             if (_owner == "owned") RemoveOwnIcon("dispose");

@@ -34,8 +34,6 @@ namespace DesktopCalendar.UI
         private const int ROW_STEP = 50;
         private const int ROW_RADIUS = 10;
         private const int PILL_RADIUS = 8;
-        private const int TIP_RADIUS = 10;
-        private const int TIP_PAD = 12;
         private const int TIP_LINE_H = 20;
         private const int TIP_ROW_H = 44;        // 提示行高（两行正文）
         private const int TIP_ROW_STEP = 50;
@@ -92,6 +90,7 @@ namespace DesktopCalendar.UI
 
         private Rectangle _monthCard;
         private Rectangle _sideCard;
+        private Rectangle _tipCard;             // 每日提示卡：与日程卡并列的独立卡片
 
         private Rectangle _rPrev;
         private Rectangle _rNext;
@@ -210,8 +209,27 @@ namespace DesktopCalendar.UI
             int cardH = _statusTop - 12 - CARD_TOP;
             if (cardH < 260) cardH = 260;
 
+            // 侧栏是并列两张卡：日程卡在上、每日提示卡在下，中间走一条 GAP 的窗口底色。
+            // 夹的是卡高：提示卡内容矩形（卡高 - CARD_PAD*2）才是 TIP_MIN_H..TIP_MAX_H 那一块。
+            int tipH = cardH / 3;
+            if (tipH < TIP_MIN_H + CARD_PAD * 2) tipH = TIP_MIN_H + CARD_PAD * 2;
+            if (tipH > TIP_MAX_H + CARD_PAD * 2) tipH = TIP_MAX_H + CARD_PAD * 2;
+
+            int schedH = cardH - tipH - GAP;
+            if (schedH < 240)
+            {
+                schedH = 240;
+                tipH = cardH - schedH - GAP;
+                if (tipH < 0)
+                {
+                    tipH = 0;
+                    schedH = cardH;
+                }
+            }
+
             _monthCard = new Rectangle(PAD, CARD_TOP, _leftW, cardH);
-            _sideCard = new Rectangle(_sideX, CARD_TOP, sideW, cardH);
+            _sideCard = new Rectangle(_sideX, CARD_TOP, sideW, schedH);
+            _tipCard = new Rectangle(_sideX, _sideCard.Bottom + GAP, sideW, tipH);
 
             // 头部：品牌标记在 (24,18,28,28)，月份标题在标记右侧的拖拽条上，
             // ‹ › 收到月历卡右端，今天胶囊再往右，— / × 贴窗口右上（右边距与 PAD 对称）。
@@ -240,26 +258,19 @@ namespace DesktopCalendar.UI
             Rectangle side = CardInner(_sideCard);
             _rNew = new Rectangle(side.X, side.Bottom - NEW_H, side.Width, NEW_H);
 
-            // 每日提示面板独占底部约 1/3：日程列表在上，提示面板在下，各自滚动
             int contentTop = side.Y + DATE_HEAD_H + LIST_GAP;
-            int contentBottom = _rNew.Y - 12;
-            int tipH = side.Height / 3;
-            if (tipH < TIP_MIN_H) tipH = TIP_MIN_H;
-            if (tipH > TIP_MAX_H) tipH = TIP_MAX_H;
-            _rTipPanel = new Rectangle(side.X, contentBottom - tipH, side.Width, tipH);
-
-            int listH = _rTipPanel.Y - LIST_GAP - contentTop;
+            int listH = _rNew.Y - 12 - contentTop;
             if (listH < 0) listH = 0;
             _rList = new Rectangle(side.X, contentTop, side.Width, listH);
 
-            _rTipEdit = new Rectangle(_rTipPanel.Right - TIP_PAD - TIP_EDIT_W, _rTipPanel.Y + 8, TIP_EDIT_W, 18);
-            int tipListTop = _rTipPanel.Y + TIP_HEAD_H;
-            _rTipList = new Rectangle(_rTipPanel.X + TIP_PAD, tipListTop,
-                _rTipPanel.Width - TIP_PAD * 2, _rTipPanel.Bottom - TIP_PAD - tipListTop);
-            if (_rTipList.Height < 0)
-            {
-                _rTipList = new Rectangle(_rTipList.X, tipListTop, _rTipList.Width, 0);
-            }
+            // 提示卡内容直接用卡的 CardInner：头部「每日提示 / 编辑」占 TIP_HEAD_H，其余给逐条提示
+            Rectangle tip = CardInner(_tipCard);
+            _rTipPanel = tip;
+            _rTipEdit = new Rectangle(tip.Right - TIP_EDIT_W - 4, tip.Y + 8, TIP_EDIT_W, 18);
+            int tipListTop = tip.Y + TIP_HEAD_H;
+            int tipListH = tip.Bottom - 4 - tipListTop;
+            if (tipListH < 0) tipListH = 0;
+            _rTipList = new Rectangle(tip.X, tipListTop, tip.Width - 6, tipListH);
             ClampScrolls();
 
             int pillY = _statusTop + (STATUS_H - BTN_H) / 2;
@@ -299,7 +310,7 @@ namespace DesktopCalendar.UI
         internal void HandleWheel(Point screen, int delta)
         {
             Point p = PointToClient(screen);
-            bool inTip = _rTipPanel.Contains(p);
+            bool inTip = _tipCard.Contains(p);
             bool inList = _rList.Contains(p);
             if (!inTip && !inList) return;
 
@@ -453,6 +464,8 @@ namespace DesktopCalendar.UI
 
         // 测试入口：只在同程序集内可见，UI 之外不给用。
         internal Rectangle TipBounds { get { return _rTipPanel; } }
+        internal Rectangle TipCardBounds { get { return _tipCard; } }
+        internal Rectangle SideCardBounds { get { return _sideCard; } }
         internal Rectangle TipEditBounds { get { return _rTipEdit; } }
         internal Rectangle TipListBounds { get { return _rTipList; } }
         internal TipStore TipStoreRef { get { return _tipStore; } }
@@ -744,6 +757,7 @@ namespace DesktopCalendar.UI
 
             Rectangle mCard = Draw.Card(g, _monthCard, CARD_RADIUS, t.Card, t.CardLine, t.Shadow);
             Rectangle sCard = Draw.Card(g, _sideCard, CARD_RADIUS, t.Card, t.CardLine, t.Shadow);
+            Rectangle tCard = Draw.Card(g, _tipCard, CARD_RADIUS, t.TipBg, t.TipLine, t.Shadow);
 
             // 状态条顶边：一条 1px 混合线（不是填充），左右让开 PAD 保持边距干净
             Draw.Line(g, PAD, _statusTop + 0.5f, w - PAD, _statusTop + 0.5f,
@@ -753,11 +767,16 @@ namespace DesktopCalendar.UI
 
             // Draw.Card 返回卡片内缩 1px 的内容矩形；再让开 CARD_PAD-1 正好等于 CardInner()，
             // 也就是 LayoutRegions 用来排 _rList / _rTipPanel / _rNew 的同一条公式。
+            // 每日提示是并列的第二张卡，卡面/描边走 TipBg / TipLine。
             Rectangle sideInner = Inset(sCard, CARD_PAD - 1);
+            Rectangle tipInner = Inset(tCard, CARD_PAD - 1);
             if (mCard.Width > 0 && sideInner.Width > 0 && sideInner.Height > 0)
             {
                 DrawSidebar(g, t, sideInner);
-                DrawTipPanel(g, t);
+            }
+            if (tipInner.Width > 40 && tipInner.Height > 30)
+            {
+                DrawTipPanel(g, t, tipInner);
             }
 
             DrawStatus(g, t);
@@ -903,24 +922,18 @@ namespace DesktopCalendar.UI
                 StringAlignment.Center, StringAlignment.Center);
         }
 
-        /// <summary>每日提示面板：TipBg 面 + TipLine 描边；头部「每日提示 / 编辑」，下面把全部提示逐条列出，滚轮滚动。</summary>
-        private void DrawTipPanel(Graphics g, Theme t)
+        /// <summary>每日提示卡内容（卡的圆角/描边由 Draw.Card 画）：头部「每日提示 / 编辑」，下面把全部提示逐条列出，滚轮滚动。</summary>
+        private void DrawTipPanel(Graphics g, Theme t, Rectangle r)
         {
-            Rectangle r = _rTipPanel;
-            if (r.Width <= 40 || r.Height <= 30) return;
-
-            Draw.Block(g, r, TIP_RADIUS, t.TipBg);
-            Draw.StrokeRound(g, r, TIP_RADIUS, t.TipLine, 1f);
-
             Draw.Text(g, "每日提示", t.SmallBold, t.Accent,
-                new Rectangle(r.X + TIP_PAD, r.Y + 8, 120, 18),
+                new Rectangle(r.X, r.Y + 8, 120, 18),
                 StringAlignment.Near, StringAlignment.Center);
 
             bool hotEdit = _hover == HIT_TIP_EDIT;
             Draw.Text(g, TIP_EDIT_LABEL, t.Small, hotEdit ? t.Accent : t.TextMuted, _rTipEdit,
                 StringAlignment.Far, StringAlignment.Center);
 
-            Draw.Line(g, r.X + TIP_PAD, r.Y + TIP_HEAD_H - 5f, r.Right - TIP_PAD, r.Y + TIP_HEAD_H - 5f,
+            Draw.Line(g, r.X, r.Y + TIP_HEAD_H - 5f, r.Right, r.Y + TIP_HEAD_H - 5f,
                       Draw.Blend(t.TipLine, t.TipBg, 0.4f), 1f);
 
             int count = TipRowCount();
@@ -975,7 +988,7 @@ namespace DesktopCalendar.UI
             if (g == null || f == null || string.IsNullOrEmpty(text)) return;
             if (box.Width <= 4 || box.Height <= 4) return;
 
-            int split = FitPrefix(g, text, f, box.Width);
+            int split = BreakPoint(text, FitPrefix(g, text, f, box.Width));
             string first = text;
             string second = "";
             if (split > 0 && split < text.Length)
@@ -989,6 +1002,22 @@ namespace DesktopCalendar.UI
             {
                 Draw.Ellipsis(g, second, f, c, new Rectangle(box.X, box.Y + lineH, box.Width, lineH));
             }
+        }
+
+        private const string TIP_BREAKS = "，。、；：！？,.;:!? ";
+
+        /// <summary>把折行点往前挪到最近的标点/空格之后，免得一个「。」被单独甩到第二行。</summary>
+        private static int BreakPoint(string s, int split)
+        {
+            if (string.IsNullOrEmpty(s) || split <= 1 || split >= s.Length) return split;
+
+            int from = split - 14;
+            if (from < 0) from = 0;
+            for (int i = split - 1; i >= from; i--)
+            {
+                if (TIP_BREAKS.IndexOf(s[i]) >= 0) return i + 1;
+            }
+            return split;
         }
 
         /// <summary>能放进 maxW 的最长前缀长度（至少 1，最多 len）。</summary>

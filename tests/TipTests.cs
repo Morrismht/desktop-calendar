@@ -386,6 +386,16 @@ namespace DesktopCalendar.Tests
                 Check("9c 提示面板落在日程列表之下、状态区之上",
                     e.X > 0 && panel.Bottom < form.ClientSize.Height - 40,
                     string.Format("panel={0} clientH={1}", Fmt(panel), form.ClientSize.Height));
+
+                Rectangle tipCard = form.TipCardBounds;
+                Rectangle sideCard = form.SideCardBounds;
+                Check("9d 每日提示是独立一卡，与日程卡上下并列且不重叠",
+                    tipCard.Y > sideCard.Bottom && tipCard.Width == sideCard.Width
+                    && sideCard.Contains(panel) == false && tipCard.Contains(panel),
+                    string.Format("side={0} tip={1} panel={2}", Fmt(sideCard), Fmt(tipCard), Fmt(panel)));
+                Check("9e 日程卡内不含提示面板（提示已经搬出日程框）",
+                    !sideCard.Contains(panel) && tipCard.Top >= sideCard.Bottom,
+                    string.Format("side={0} tip={1}", Fmt(sideCard), Fmt(tipCard)));
             }
             finally
             {
