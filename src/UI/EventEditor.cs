@@ -80,16 +80,29 @@ namespace DesktopCalendar.UI
         private int _hover = -1;
         private string _error = "";
 
+        /// <summary>「新建」时的初始日期；DateTime.MinValue 表示没指定，退回今天。</summary>
+        private DateTime _defaultDate = DateTime.MinValue;
+
+        /// <summary>测试用：日期输入框当前内容。</summary>
+        internal string DateText
+        {
+            get { return _txtDate == null ? "" : _txtDate.Text; }
+        }
+
         /// <summary>保存后的结果；取消时为 null。</summary>
         public ScheduleItem Result { get; private set; }
 
-        public EventEditor(Store store) : this(store, null) { }
+        public EventEditor(Store store) : this(store, null, DateTime.MinValue) { }
 
-        public EventEditor(Store store, ScheduleItem existing)
+        public EventEditor(Store store, ScheduleItem existing) : this(store, existing, DateTime.MinValue) { }
+
+        /// <summary>defaultDate 是「新建」时的初始日期（MainForm 传当前选中的那天）；编辑已有日程时忽略它。</summary>
+        internal EventEditor(Store store, ScheduleItem existing, DateTime defaultDate)
         {
             _store = store;
             _existing = existing;
             _isEdit = existing != null;
+            _defaultDate = defaultDate.Date;
 
             SetStyle(ControlStyles.AllPaintingInWmPaint
                 | ControlStyles.OptimizedDoubleBuffer
@@ -344,9 +357,21 @@ namespace DesktopCalendar.UI
             _colorIndex = 0;
             if (it == null)
             {
+                DateTime day = _defaultDate == DateTime.MinValue ? DateTime.Today : _defaultDate.Date;
                 DateTime now = DateTime.Now;
-                DateTime d = now.AddMinutes(30 - (now.Minute % 30));
-                if (d.Minute == 60) d = d.AddMinutes(30);
+                DateTime d;
+                if (day == DateTime.Today)
+                {
+                    // 新建的就是今天：默认落在下一个整半点，省得填一个已经过去的时间
+                    d = now.AddMinutes(30 - (now.Minute % 30));
+                    if (d.Minute == 60) d = d.AddMinutes(30);
+                    d = new DateTime(day.Year, day.Month, day.Day, d.Hour, d.Minute, 0);
+                }
+                else
+                {
+                    // 新建的是别的日子：默认早上 9 点
+                    d = new DateTime(day.Year, day.Month, day.Day, 9, 0, 0);
+                }
                 _txtTitle.Text = "";
                 _txtDate.Text = d.ToString("yyyy-MM-dd");
                 _txtTime.Text = d.ToString("HH:mm");

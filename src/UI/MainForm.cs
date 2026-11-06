@@ -535,7 +535,7 @@ namespace DesktopCalendar.UI
         {
             try
             {
-                using (EventEditor editor = new EventEditor(_store, existing))
+                using (EventEditor editor = new EventEditor(_store, existing, _selected))
                 {
                     editor.ShowDialog(this);
                     if (editor.Result != null) RefreshAll();
